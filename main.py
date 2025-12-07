@@ -1,3 +1,4 @@
+import os
 import telebot
 import random
 import time
@@ -5,13 +6,66 @@ import string
 import requests
 import json
 import sqlite3
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+import threading
 from datetime import datetime, timedelta
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+from flask import Flask, jsonify
+
+# ==================== FLASK APP FOR KOYEB ====================
+app = Flask(__name__)
+
+# Required HTTP routes for Koyeb health checks
+@app.route('/')
+def health_check():
+    """Required route for Koyeb to keep service alive"""
+    return jsonify({
+        "status": "online",
+        "service": "CARNAGE Telegram Bot",
+        "timestamp": datetime.now().isoformat(),
+        "uptime": time.time() - start_time,
+        "endpoints": ["/", "/health", "/stats", "/users"]
+    })
+
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
+@app.route('/stats')
+def web_stats():
+    """Web stats endpoint"""
+    return jsonify({
+        "total_users": get_total_users(),
+        "active_sessions": len(session_data),
+        "requests_count": requests_count,
+        "errors_count": errors_count,
+        "bot_running": bot_running
+    })
+
+@app.route('/users')
+def web_users():
+    """Web users endpoint"""
+    users = get_all_users()
+    return jsonify({
+        "total": len(users),
+        "approved": sum(1 for u in users if u[3] == 1),
+        "pending": sum(1 for u in users if u[3] == 0),
+        "banned": sum(1 for u in users if u[5] == 1)
+    })
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8271097949:AAGgugeFfdJa6NtrsrrIrIfqxcZeQ1xenA8"  # Replace with your bot token
-TELEGRAM_CHANNEL_ID = "-100"  # Optional: Replace with your channel ID if you have one
-ADMIN_USER_ID = 7575087826  # Replace with your Telegram user ID
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8271097949:AAGgugeFfdJa6NtrsrrIrIfqxcZeQ1xenA8')
+TELEGRAM_CHANNEL_ID = os.environ.get('TELEGRAM_CHANNEL_ID', '1002227808698')
+ADMIN_USER_ID = int(os.environ.get('ADMIN_USER_ID', '7575087826'))
+
+# Global variables
+bot = telebot.TeleBot(BOT_TOKEN)
+start_time = time.time()
+bot_running = True
+session_data = {}
+requests_count = 0
+errors_count = 0
+rate_limit_cooldowns = {}
 
 # ==================== DATABASE SETUP ====================
 def init_database():
@@ -49,7 +103,7 @@ def init_database():
     conn.commit()
     conn.close()
 
-# Initialize database
+# Initialize database at startup
 init_database()
 
 # ==================== DATABASE FUNCTIONS ====================
@@ -202,15 +256,6 @@ def broadcast_message():
     users = [row[0] for row in cursor.fetchall()]
     conn.close()
     return users
-
-# ==================== BOT INITIALIZATION ====================
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# Session data
-session_data = {}
-requests_count = 0
-errors_count = 0
-rate_limit_cooldowns = {}
 
 # ==================== WELCOME MESSAGE ====================
 WELCOME_MESSAGE = """
@@ -1275,15 +1320,36 @@ def run_main_swap(chat_id):
     
     show_swapper_menu(chat_id)
 
-# ==================== START BOT ====================
-print("🤖 CARNAGE Swapper Bot with Admin System")
-print(f"👑 Admin ID: {ADMIN_USER_ID}")
-print("📊 Database initialized")
-print("🚀 Bot is starting...")
+# ==================== TELEGRAM BOT POLLING THREAD ====================
+def run_telegram_bot():
+    """Run Telegram bot in separate thread"""
+    print("🤖 Starting Telegram bot polling...")
+    while True:
+        try:
+            bot.polling(none_stop=True, timeout=30, long_polling_timeout=30)
+        except Exception as e:
+            print(f"❌ Bot polling error: {e}")
+            time.sleep(5)
+            continue
 
-try:
-    bot.polling(none_stop=True)
-except Exception as e:
-    print(f"❌ Bot crashed: {e}")
-    print("🔄 Restarting in 5 seconds...")
-    time.sleep(5)
+# ==================== MAIN STARTUP ====================
+def main():
+    """Start everything"""
+    print("🚀 CARNAGE Swapper Bot with Admin System")
+    print(f"👑 Admin ID: {ADMIN_USER_ID}")
+    print("📊 Database initialized")
+    
+    # Start Telegram bot in background thread
+    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    bot_thread.start()
+    print("🤖 Telegram bot started in background")
+    
+    # Get port from environment (Koyeb provides PORT)
+    port = int(os.environ.get('PORT', 8080))
+    
+    # Start Flask app (main thread)
+    print(f"🌐 Starting Flask server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+if __name__ == '__main__':
+    main()
