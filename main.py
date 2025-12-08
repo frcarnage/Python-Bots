@@ -152,10 +152,159 @@ rate_limit_cooldowns = {}
 tutorial_sessions = {}
 referral_cache = {}
 
+# ==================== HELPER FUNCTIONS ====================
+def generate_referral_code(user_id):
+    """Generate unique referral code"""
+    return f"CARNAGE{user_id}{random.randint(1000, 9999)}"
+
+def get_db_connection():
+    """Get database connection"""
+    return sqlite3.connect('users.db')
+
+def is_admin(user_id):
+    """Check if user is admin"""
+    return user_id == ADMIN_USER_ID
+
+def is_user_approved(user_id):
+    """Check if user is approved"""
+    status = get_user_status(user_id)
+    return status == "approved"
+
+def send_to_admin(message_text, parse_mode="Markdown"):
+    """Send notification to admin"""
+    try:
+        bot.send_message(ADMIN_USER_ID, message_text, parse_mode=parse_mode)
+    except Exception as e:
+        print(f"Failed to send message to admin: {e}")
+
+def create_reply_menu(buttons, row_width=2, add_back=True):
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
+    for i in range(0, len(buttons), row_width):
+        row = [KeyboardButton(text) for text in buttons[i:i + row_width]]
+        markup.add(*row)
+    if add_back:
+        markup.add(KeyboardButton("Back"))
+    return markup
+
+def send_admin_notification(username, action, user_info=""):
+    """Send swap notification to admin"""
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if action == "Swapped":
+        notification = f"""
+🔄 *CARNAGE Swap Notification*
+
+✅ *Successful Swap*
+👤 Username: `{username}`
+🕒 Time: {current_time}
+{user_info}
+
+📍 Status: Successfully swapped!
+📊 Bot: CARNAGE Swapper
+        """
+    elif action == "Failed":
+        notification = f"""
+🔄 *CARNAGE Swap Notification*
+
+❌ *Failed Swap*
+👤 Username: `{username}`
+🕒 Time: {current_time}
+{user_info}
+
+📍 Status: Swap failed!
+📊 Bot: CARNAGE Swapper
+        """
+    
+    send_to_admin(notification)
+
+# ==================== REFERRAL SYSTEM ====================
+def process_referral(user_id, referral_code):
+    """Process referral when new user joins"""
+    if not referral_code or referral_code == "direct":
+        return
+    
+    # Find referrer by code
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE referral_code = ?", (referral_code,))
+    result = cursor.fetchone()
+    
+    if result:
+        referrer_id = result[0]
+        
+        # Update referred user
+        cursor.execute("UPDATE users SET referred_by = ?, join_method = 'referral' WHERE user_id = ?", 
+                      (referrer_id, user_id))
+        
+        # Update referrer stats
+        cursor.execute('''
+            UPDATE users 
+            SET total_referrals = total_referrals + 1,
+                free_swaps_earned = free_swaps_earned + 2
+            WHERE user_id = ?
+        ''', (referrer_id,))
+        
+        conn.commit()
+        
+        # Award free swaps to new user (no approval needed)
+        cursor.execute("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
+                      (user_id,))
+        conn.commit()
+        
+        # Notify referrer
+        try:
+            bot.send_message(
+                referrer_id,
+                f"🎉 *New Referral!*\n\n"
+                f"Someone joined using your referral link!\n"
+                f"• You earned: **2 FREE swaps** 🆓\n"
+                f"• Total referrals: {get_user_referrals_count(referrer_id)}\n"
+                f"• Total free swaps: {get_user_free_swaps(referrer_id)}",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+        
+        # Award achievements
+        award_achievement(referrer_id, "referral_master")
+        
+        # Check if reached 5 referrals for special achievement
+        if get_user_referrals_count(referrer_id) >= 5:
+            award_achievement(referrer_id, "referral_master")
+    
+    conn.close()
+
+def get_user_referrals_count(user_id):
+    """Get count of user's referrals"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def get_user_free_swaps(user_id):
+    """Get user's free swaps count"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT free_swaps_earned FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def get_total_referrals():
+    """Get total referrals across all users"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(total_referrals) FROM users")
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result[0] else 0
+
 # ==================== DATABASE SETUP ====================
 def init_database():
     """Initialize SQLite database with new tables"""
-    conn = sqlite3.connect('users.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Users table
@@ -315,99 +464,7 @@ def get_total_achievements_awarded():
     conn.close()
     return count
 
-# ==================== REFERRAL SYSTEM ====================
-def generate_referral_code(user_id):
-    """Generate unique referral code"""
-    return f"CARNAGE{user_id}{random.randint(1000, 9999)}"
-
-def process_referral(user_id, referral_code):
-    """Process referral when new user joins"""
-    if not referral_code or referral_code == "direct":
-        return
-    
-    # Find referrer by code
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE referral_code = ?", (referral_code,))
-    result = cursor.fetchone()
-    
-    if result:
-        referrer_id = result[0]
-        
-        # Update referred user
-        cursor.execute("UPDATE users SET referred_by = ?, join_method = 'referral' WHERE user_id = ?", 
-                      (referrer_id, user_id))
-        
-        # Update referrer stats
-        cursor.execute('''
-            UPDATE users 
-            SET total_referrals = total_referrals + 1,
-                free_swaps_earned = free_swaps_earned + 2
-            WHERE user_id = ?
-        ''', (referrer_id,))
-        
-        conn.commit()
-        
-        # Award free swaps to new user (no approval needed)
-        cursor.execute("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
-                      (user_id,))
-        conn.commit()
-        
-        # Notify referrer
-        try:
-            bot.send_message(
-                referrer_id,
-                f"🎉 *New Referral!*\n\n"
-                f"Someone joined using your referral link!\n"
-                f"• You earned: **2 FREE swaps** 🆓\n"
-                f"• Total referrals: {get_user_referrals_count(referrer_id)}\n"
-                f"• Total free swaps: {get_user_free_swaps(referrer_id)}",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-        # Award achievements
-        award_achievement(referrer_id, "referral_master")
-        
-        # Check if reached 5 referrals for special achievement
-        if get_user_referrals_count(referrer_id) >= 5:
-            award_achievement(referrer_id, "referral_master")
-    
-    conn.close()
-
-def get_user_referrals_count(user_id):
-    """Get count of user's referrals"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
-
-def get_user_free_swaps(user_id):
-    """Get user's free swaps count"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT free_swaps_earned FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 0
-
-def get_total_referrals():
-    """Get total referrals across all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(total_referrals) FROM users")
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result[0] else 0
-
 # ==================== DATABASE FUNCTIONS ====================
-def get_db_connection():
-    """Get database connection"""
-    return sqlite3.connect('users.db')
-
 def add_user(user_id, username, first_name, last_name, referral_code="direct"):
     """Add new user to database with referral support"""
     conn = get_db_connection()
@@ -525,8 +582,6 @@ def get_user_detailed_stats(user_id):
         ]
     }
 
-import threading
-
 def keep_alive_loop():
     """Internal loop to keep bot awake"""
     while True:
@@ -630,63 +685,6 @@ def get_all_users():
     users = cursor.fetchall()
     conn.close()
     return users
-
-# ==================== HELPER FUNCTIONS ====================
-def is_admin(user_id):
-    """Check if user is admin"""
-    return user_id == ADMIN_USER_ID
-
-def is_user_approved(user_id):
-    """Check if user is approved"""
-    status = get_user_status(user_id)
-    return status == "approved"
-
-def send_to_admin(message_text, parse_mode="Markdown"):
-    """Send notification to admin"""
-    try:
-        bot.send_message(ADMIN_USER_ID, message_text, parse_mode=parse_mode)
-    except Exception as e:
-        print(f"Failed to send message to admin: {e}")
-
-def create_reply_menu(buttons, row_width=2, add_back=True):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
-    for i in range(0, len(buttons), row_width):
-        row = [KeyboardButton(text) for text in buttons[i:i + row_width]]
-        markup.add(*row)
-    if add_back:
-        markup.add(KeyboardButton("Back"))
-    return markup
-
-def send_admin_notification(username, action, user_info=""):
-    """Send swap notification to admin"""
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    if action == "Swapped":
-        notification = f"""
-🔄 *CARNAGE Swap Notification*
-
-✅ *Successful Swap*
-👤 Username: `{username}`
-🕒 Time: {current_time}
-{user_info}
-
-📍 Status: Successfully swapped!
-📊 Bot: CARNAGE Swapper
-        """
-    elif action == "Failed":
-        notification = f"""
-🔄 *CARNAGE Swap Notification*
-
-❌ *Failed Swap*
-👤 Username: `{username}`
-🕒 Time: {current_time}
-{user_info}
-
-📍 Status: Swap failed!
-📊 Bot: CARNAGE Swapper
-        """
-    
-    send_to_admin(notification)
 
 # ==================== TUTORIAL SYSTEM ====================
 TUTORIAL_STEPS = [
