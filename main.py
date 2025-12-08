@@ -17,12 +17,33 @@ from telebot.types import (
     InputTextMessageContent
 )
 from flask import Flask, jsonify, render_template_string
-import atexit
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8271097949:AAGgugeFfdJa6NtrsrrIrIfqxcZeQ1xenA8')
 ADMIN_USER_ID = int(os.environ.get('ADMIN_USER_ID', '7575087826'))
 BOT_USERNAME = "CarnageSwapperBot"  # Change to your bot's username
+
+# ======= CHANNEL CONFIGURATION =======
+UPDATES_CHANNEL = "@CarnageUpdates"  # Your updates channel
+PROOFS_CHANNEL = "@CarnageProofs"    # Your proofs channel
+CHANNELS = {
+    "updates": {
+        "id": UPDATES_CHANNEL,
+        "name": "📢 Updates Channel",
+        "description": "Get latest updates, server info, and announcements"
+    },
+    "proofs": {
+        "id": PROOFS_CHANNEL,
+        "name": "✅ Proofs Channel",
+        "description": "See successful swaps and user proofs"
+    }
+}
+
+# ======= REQUIRED CHANNEL SETUP =======
+# 1. Create these two channels on Telegram
+# 2. Add your bot as ADMIN to both channels
+# 3. Make sure bot has permission to check members
+# 4. Update the @channel usernames above
 
 # Global variables
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -84,6 +105,76 @@ def execute_one(query, params=()):
         finally:
             conn.close()
 
+# ==================== CHANNEL VERIFICATION SYSTEM ====================
+def check_channel_membership(user_id, channel_username):
+    """Check if user is member of a channel"""
+    try:
+        # Try to get chat member - bot must be admin in channel
+        chat_member = bot.get_chat_member(channel_username, user_id)
+        # Check if user is member, administrator, creator, or restricted
+        return chat_member.status in ['member', 'administrator', 'creator', 'restricted']
+    except Exception as e:
+        print(f"Error checking channel membership for {channel_username}: {e}")
+        return False
+
+def check_all_channels(user_id):
+    """Check if user has joined all required channels"""
+    results = {}
+    for channel_type, channel_info in CHANNELS.items():
+        results[channel_type] = check_channel_membership(user_id, channel_info['id'])
+    return results
+
+def has_joined_all_channels(user_id):
+    """Check if user has joined all required channels"""
+    results = check_all_channels(user_id)
+    return all(results.values())
+
+def create_channel_buttons():
+    """Create inline buttons for channel joining"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    for channel_type, channel_info in CHANNELS.items():
+        markup.add(InlineKeyboardButton(
+            f"🔗 Join {channel_info['name']}",
+            url=f"https://t.me/{channel_info['id'].replace('@', '')}"
+        ))
+    
+    markup.add(InlineKeyboardButton(
+        "✅ I've Joined All Channels",
+        callback_data="check_channels"
+    ))
+    
+    return markup
+
+def send_welcome_with_channels(user_id, first_name):
+    """Send welcome message with channel requirements"""
+    welcome_message = f"""
+🤖 *Welcome to CARNAGE Swapper Bot* {first_name}! 🎉
+
+*⚠️ IMPORTANT: Before using the bot, you MUST join our official channels:*
+
+"""
+    
+    for channel_type, channel_info in CHANNELS.items():
+        welcome_message += f"\n📌 *{channel_info['name']}*"
+        welcome_message += f"\n{channel_info['description']}"
+        welcome_message += f"\nJoin: {channel_info['id']}\n"
+    
+    welcome_message += f"""
+*Why join these channels?*
+• {CHANNELS['updates']['name']}: Get latest updates, server status, and news
+• {CHANNELS['proofs']['name']}: See successful swaps as proof and user testimonials
+
+*After joining both channels, click the button below to verify.*
+"""
+    
+    bot.send_message(
+        user_id,
+        welcome_message,
+        parse_mode="Markdown",
+        reply_markup=create_channel_buttons()
+    )
+
 # ==================== BASIC HELPER FUNCTIONS ====================
 def is_admin(user_id):
     """Check if user is admin"""
@@ -99,6 +190,13 @@ def send_to_admin(message_text, parse_mode="Markdown"):
         bot.send_message(ADMIN_USER_ID, message_text, parse_mode=parse_mode)
     except Exception as e:
         print(f"Failed to send message to admin: {e}")
+
+def send_to_proofs_channel(message_text, parse_mode="Markdown"):
+    """Send swap proof to proofs channel"""
+    try:
+        bot.send_message(CHANNELS['proofs']['id'], message_text, parse_mode=parse_mode)
+    except Exception as e:
+        print(f"Failed to send message to proofs channel: {e}")
 
 def create_reply_menu(buttons, row_width=2, add_back=True):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
@@ -215,6 +313,50 @@ def log_swap(user_id, target_username, status, error_message=None):
             award_achievement(user_id, "first_swap")
         if success_count >= 10:
             award_achievement(user_id, "swap_pro")
+        
+        # Send to proofs channel
+        send_swap_proof(user_id, target_username, "success")
+    elif status == "failed":
+        # Send failed swap to proofs channel
+        send_swap_proof(user_id, target_username, "failed", error_message)
+
+def send_swap_proof(user_id, target_username, status, error_message=None):
+    """Send swap proof to proofs channel"""
+    user_info = execute_one("SELECT username, first_name FROM users WHERE user_id = ?", (user_id,))
+    username = f"@{user_info[0]}" if user_info and user_info[0] else f"User {user_id}"
+    first_name = user_info[1] if user_info and user_info[1] else "User"
+    
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if status == "success":
+        proof_message = f"""
+✅ *SUCCESSFUL SWAP PROOF*
+
+👤 *User:* {first_name} ({username})
+🎯 *Target Username:* `{target_username}`
+🕒 *Time:* {current_time}
+🏆 *Status:* Successfully Swapped!
+
+⚡ *Bot:* CARNAGE Swapper v3.0
+🔗 *Proof ID:* CARNAGE-{random.randint(10000, 99999)}
+"""
+    else:
+        proof_message = f"""
+❌ *FAILED SWAP ATTEMPT*
+
+👤 *User:* {first_name} ({username})
+🎯 *Target Username:* `{target_username}`
+🕒 *Time:* {current_time}
+⚠️ *Status:* Failed
+📝 *Error:* {error_message or 'Unknown error'}
+
+⚡ *Bot:* CARNAGE Swapper v3.0
+"""
+    
+    try:
+        send_to_proofs_channel(proof_message)
+    except Exception as e:
+        print(f"Failed to send proof to channel: {e}")
 
 def get_total_swaps():
     """Get total swaps across all users"""
@@ -346,6 +488,7 @@ ACHIEVEMENTS = {
     "first_user": {"name": "Pioneer", "emoji": "🧭", "description": "First 50 users"},
     "tutorial_complete": {"name": "Quick Learner", "emoji": "🎓", "description": "Complete interactive tutorial"},
     "dashboard_user": {"name": "Dashboard Pro", "emoji": "📊", "description": "Visit web dashboard"},
+    "channel_member": {"name": "Official Member", "emoji": "📢", "description": "Join both official channels"},
 }
 
 def award_achievement(user_id, achievement_id):
@@ -404,7 +547,7 @@ def get_total_achievements_awarded():
 
 # ==================== DATABASE SETUP ====================
 def init_database():
-    """Initialize SQLite database with new tables - SIMPLE VERSION"""
+    """Initialize SQLite database with new tables"""
     try:
         with db_lock:
             conn = get_db_connection()
@@ -430,7 +573,8 @@ def init_database():
                     free_swaps_earned INTEGER DEFAULT 0,
                     total_swaps INTEGER DEFAULT 0,
                     successful_swaps INTEGER DEFAULT 0,
-                    join_method TEXT DEFAULT 'direct'
+                    join_method TEXT DEFAULT 'direct',
+                    channels_joined INTEGER DEFAULT 0
                 )
             ''')
             
@@ -466,25 +610,29 @@ def init_database():
                 referral_code = generate_referral_code(ADMIN_USER_ID)
                 cursor.execute('''
                     INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, 
-                                      join_date, last_active, is_banned, is_admin, referral_code, join_method)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      join_date, last_active, is_banned, is_admin, referral_code, join_method, channels_joined)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (ADMIN_USER_ID, "admin", "Admin", "User", 1, "9999-12-31 23:59:59", 
                       datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct'))
+                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct', 1))
             
             conn.commit()
             conn.close()
-            
-            # Award achievements AFTER database is created
-            time.sleep(0.5)  # Small delay
-            award_achievement(ADMIN_USER_ID, "founder")
-            award_achievement(ADMIN_USER_ID, "first_user")
             
             print("✅ Database initialized successfully")
             
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
         # Try to continue anyway
+
+def mark_channels_joined(user_id):
+    """Mark user as having joined all channels"""
+    execute_query("UPDATE users SET channels_joined = 1 WHERE user_id = ?", (user_id,), commit=True)
+
+def has_user_joined_channels(user_id):
+    """Check if user has joined channels in database"""
+    result = execute_one("SELECT channels_joined FROM users WHERE user_id = ?", (user_id,))
+    return result and result[0] == 1
 
 # ==================== TUTORIAL SYSTEM ====================
 TUTORIAL_STEPS = [
@@ -765,8 +913,95 @@ def keep_alive_loop():
             pass
         time.sleep(300)  # 5 minutes
 
-# Start in background thread
-threading.Thread(target=keep_alive_loop, daemon=True).start()
+# ==================== CALLBACK HANDLERS ====================
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    """Handle callback queries"""
+    user_id = call.from_user.id
+    message_id = call.message.message_id
+    
+    if call.data == "check_channels":
+        # Check if user has joined all channels
+        channel_results = check_all_channels(user_id)
+        
+        if all(channel_results.values()):
+            # User has joined all channels
+            bot.answer_callback_query(call.id, "✅ Verified! You've joined all channels!")
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text="🎉 *Channel Verification Successful!*\n\nYou've joined all required channels! ✅\n\nNow you can use the bot features.\n\nSend /start again to begin.",
+                parse_mode="Markdown"
+            )
+            
+            # Mark user as having joined channels
+            mark_channels_joined(user_id)
+            
+            # Award achievement
+            award_achievement(user_id, "channel_member")
+            
+            # Send welcome message with features
+            time.sleep(1)
+            welcome_features = f"""
+🤖 *Welcome to CARNAGE Swapper Bot!* 🎉
+
+*What's New in v3.0:*
+✨ *Referral System* - Get 2 FREE swaps per friend!
+📊 *Web Dashboard* - Track your stats online
+🏆 *Achievements* - Unlock badges as you swap
+🎓 *Interactive Tutorial* - Learn step by step
+📈 *Detailed Analytics* - See your swap history
+
+*Quick Start:*
+1️⃣ Add Instagram sessions
+2️⃣ Swap usernames instantly
+3️⃣ Refer friends for FREE swaps
+4️⃣ Track progress on dashboard
+
+*Referral Bonus:* 🎁
+• Share your link → Get 2 FREE swaps per friend!
+• No approval needed for referrals!
+
+Use /tutorial for guided tour or /help for commands.
+"""
+            bot.send_message(user_id, welcome_features, parse_mode="Markdown")
+            
+        else:
+            # User hasn't joined all channels
+            missing_channels = []
+            for channel_type, joined in channel_results.items():
+                if not joined:
+                    missing_channels.append(CHANNELS[channel_type]['name'])
+            
+            bot.answer_callback_query(
+                call.id, 
+                f"❌ You need to join: {', '.join(missing_channels)}",
+                show_alert=True
+            )
+            
+            # Update message to show missing channels
+            error_message = f"""
+⚠️ *Channel Verification Failed*
+
+*You still need to join these channels:*
+
+"""
+            for channel_type, joined in channel_results.items():
+                if not joined:
+                    channel = CHANNELS[channel_type]
+                    error_message += f"\n❌ *{channel['name']}*"
+                    error_message += f"\n{channel['description']}"
+                    error_message += f"\nJoin: {channel['id']}\n"
+            
+            error_message += "\n*After joining, click the verify button again.*"
+            
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text=error_message,
+                parse_mode="Markdown",
+                reply_markup=create_channel_buttons()
+            )
 
 # ==================== COMMAND HANDLERS ====================
 @bot.message_handler(commands=['start'])
@@ -792,53 +1027,40 @@ def start_command(message):
                 bot.send_message(user_id, "Please complete /start first")
             return
     
+    # Add user to database
     add_user(user_id, username, first_name, last_name, referral_code)
     update_user_active(user_id)
     
-    welcome_message = f"""
-🤖 *Welcome to CARNAGE Swapper Bot* {first_name}! 🎉
-
-*What's New in v3.0:*
-✨ *Referral System* - Get 2 FREE swaps per friend!
-📊 *Web Dashboard* - Track your stats online
-🏆 *Achievements* - Unlock badges as you swap
-🎓 *Interactive Tutorial* - Learn step by step
-📈 *Detailed Analytics* - See your swap history
-
-*Quick Start:*
-1️⃣ Add Instagram sessions
-2️⃣ Swap usernames instantly
-3️⃣ Refer friends for FREE swaps
-4️⃣ Track progress on dashboard
-
-*Referral Bonus:* 🎁
-• Share your link → Get 2 FREE swaps per friend!
-• No approval needed for referrals!
-
-Use /tutorial for guided tour or /help for commands.
-"""
-    
-    bot.send_message(user_id, welcome_message, parse_mode="Markdown")
-    
-    # Auto-approve if came through referral
-    if referral_code != "direct":
-        bot.send_message(user_id, "✅ *Approved via referral!* You can start swapping immediately!", parse_mode="Markdown")
-        show_main_menu(user_id)
-    elif is_user_approved(user_id):
-        show_main_menu(user_id)
+    # Check if user has joined channels (either in DB or live check)
+    if has_user_joined_channels(user_id) or has_joined_all_channels(user_id):
+        # User has already joined channels
+        if referral_code != "direct":
+            bot.send_message(user_id, "✅ *Approved via referral!* You can start swapping immediately!", parse_mode="Markdown")
+            show_main_menu(user_id)
+        elif is_user_approved(user_id):
+            show_main_menu(user_id)
+        else:
+            bot.send_message(
+                user_id,
+                "⏳ *Access pending approval*\n\n"
+                "Contact @CARNAGEV1 or use referral system for instant access!\n"
+                "Tip: Get a friend to refer you for instant approval! 🎁",
+                parse_mode="Markdown"
+            )
     else:
-        bot.send_message(
-            user_id,
-            "⏳ *Access pending approval*\n\n"
-            "Contact @CARNAGEV1 or use referral system for instant access!\n"
-            "Tip: Get a friend to refer you for instant approval! 🎁",
-            parse_mode="Markdown"
-        )
+        # User needs to join channels first
+        send_welcome_with_channels(user_id, first_name)
 
 @bot.message_handler(commands=['tutorial'])
 def start_tutorial_command(message):
     """Start interactive tutorial"""
     user_id = message.chat.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     tutorial_sessions[user_id] = 0
     show_tutorial_step(user_id, 0)
 
@@ -846,6 +1068,12 @@ def start_tutorial_command(message):
 def dashboard_command(message):
     """Send user their dashboard link"""
     user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     dashboard_url = f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}"
     
     bot.send_message(
@@ -866,6 +1094,12 @@ def dashboard_command(message):
 def referral_command(message):
     """Generate referral link"""
     user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     referral_link = f"https://t.me/{BOT_USERNAME}?start=ref-{user_id}"
     referrals_count = get_user_referrals_count(user_id)
     free_swaps = get_user_free_swaps(user_id)
@@ -904,6 +1138,12 @@ def referral_command(message):
 def achievements_command(message):
     """Show user's achievements"""
     user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     achievements = get_user_achievements(user_id)
     
     response = f"""
@@ -938,6 +1178,12 @@ def achievements_command(message):
 def stats_command(message):
     """Show user statistics"""
     user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     stats = get_user_detailed_stats(user_id)
     
     if not stats:
@@ -971,6 +1217,13 @@ def stats_command(message):
 @bot.message_handler(commands=['leaderboard'])
 def leaderboard_command(message):
     """Show leaderboard"""
+    user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     # Top by successful swaps
     top_swappers = execute_query('''
         SELECT username, successful_swaps, total_referrals 
@@ -1011,6 +1264,12 @@ def leaderboard_command(message):
 def history_command(message):
     """Show user's swap history"""
     user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     history = execute_query('''
         SELECT target_username, status, swap_time 
         FROM swap_history 
@@ -1037,6 +1296,13 @@ def history_command(message):
 @bot.message_handler(commands=['help'])
 def help_command(message):
     """Show help menu"""
+    user_id = message.from_user.id
+    
+    # Check channel membership first
+    if not has_user_joined_channels(user_id) and not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
     help_text = """
 🆘 *CARNAGE Bot Help*
 
@@ -1059,11 +1325,16 @@ def help_command(message):
 /broadcast - Send message to all
 /ban - Ban user
 
+*Official Channels:*
+📢 Updates: @CarnageUpdates
+✅ Proofs: @CarnageProofs
+
 *Getting Started:*
-1. Use /tutorial for step-by-step guide
-2. Add Instagram sessions
-3. Start swapping!
-4. Refer friends for FREE swaps
+1. Join both channels above
+2. Use /tutorial for step-by-step guide
+3. Add Instagram sessions
+4. Start swapping!
+5. Refer friends for FREE swaps
 
 *Need Help?*
 Contact: @CARNAGEV1
@@ -1365,10 +1636,24 @@ def run_telegram_bot():
             time.sleep(5)
             continue
 
+# ==================== FLASK SERVER THREAD ====================
+def run_flask_app():
+    """Run Flask app in separate thread"""
+    port = int(os.environ.get('PORT', 8000))
+    print(f"🌐 Starting Flask server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
 # ==================== MAIN STARTUP ====================
 def main():
     """Start everything"""
-    # Initialize database first
+    # Start Flask server immediately in background thread
+    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    flask_thread.start()
+    
+    # Wait a moment for Flask to start
+    time.sleep(2)
+    
+    # Initialize database
     print("🔧 Initializing database...")
     init_database()
     
@@ -1376,6 +1661,8 @@ def main():
     print("🚀 CARNAGE Swapper Bot v3.0 with Advanced Features")
     print(f"👑 Admin ID: {ADMIN_USER_ID}")
     print(f"🤖 Bot Username: @{BOT_USERNAME}")
+    print(f"📢 Updates Channel: {CHANNELS['updates']['id']}")
+    print(f"✅ Proofs Channel: {CHANNELS['proofs']['id']}")
     print("✨ Features: Dashboard, Referral, Tutorial, Achievements, Analytics")
     
     # Start Telegram bot in background thread
@@ -1383,13 +1670,18 @@ def main():
     bot_thread.start()
     print("🤖 Telegram bot started in background")
     
-    # Get port from environment (Koyeb provides PORT)
-    port = int(os.environ.get('PORT', 8000))
+    # Start keep-alive loop
+    threading.Thread(target=keep_alive_loop, daemon=True).start()
     
-    # Start Flask app (main thread)
-    print(f"🌐 Starting Flask server on port {port}")
+    # Keep main thread alive
     print(f"📊 Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    print("✅ Bot is fully operational!")
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🛑 Bot shutting down...")
 
 if __name__ == '__main__':
     main()
