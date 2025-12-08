@@ -8,8 +8,15 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
-from flask import Flask, jsonify
+from telebot.types import (
+    ReplyKeyboardMarkup, 
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineQueryResultArticle,
+    InputTextMessageContent
+)
+from flask import Flask, jsonify, render_template_string
 
 # ==================== FLASK APP FOR KOYEB ====================
 app = Flask(__name__)
@@ -22,9 +29,10 @@ def health_check():
         "status": "online",
         "service": "CARNAGE Telegram Bot",
         "timestamp": datetime.now().isoformat(),
-        "uptime": time.time() - start_time,
-        "endpoints": ["/", "/health", "/stats", "/users"]
+        "version": "3.0.0",
+        "features": ["dashboard", "referral", "tutorial", "achievements", "analytics"]
     })
+
 # Add these routes to your bot.py
 @app.route('/ping1')
 def ping1():
@@ -37,7 +45,7 @@ def ping2():
 @app.route('/ping3')
 def ping3():
     return jsonify({"status": "pong3", "time": datetime.now().isoformat()})
-    
+
 @app.route('/health')
 def health():
     """Health check endpoint"""
@@ -48,27 +56,90 @@ def web_stats():
     """Web stats endpoint"""
     return jsonify({
         "total_users": get_total_users(),
-        "active_sessions": len(session_data),
-        "requests_count": requests_count,
-        "errors_count": errors_count,
-        "bot_running": bot_running
+        "total_referrals": get_total_referrals(),
+        "total_swaps": get_total_swaps(),
+        "total_achievements": get_total_achievements_awarded()
     })
 
-@app.route('/users')
-def web_users():
-    """Web users endpoint"""
-    users = get_all_users()
-    return jsonify({
-        "total": len(users),
-        "approved": sum(1 for u in users if u[3] == 1),
-        "pending": sum(1 for u in users if u[3] == 0),
-        "banned": sum(1 for u in users if u[5] == 1)
-    })
+@app.route('/dashboard/<int:user_id>')
+def user_dashboard(user_id):
+    """Web dashboard for users"""
+    user_stats = get_user_detailed_stats(user_id)
+    achievements = get_user_achievements(user_id)
+    
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CARNAGE Dashboard - @{{username}}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background: #0f0f0f; color: white; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+            .card { background: #1a1a1a; padding: 20px; border-radius: 10px; margin-bottom: 15px; }
+            .stat { display: flex; justify-content: space-between; margin: 10px 0; }
+            .badge { background: #667eea; padding: 5px 10px; border-radius: 20px; font-size: 12px; }
+            .achievement { display: inline-block; background: #2a2a2a; padding: 10px; margin: 5px; border-radius: 5px; }
+            .referral-link { background: #2a2a2a; padding: 15px; border-radius: 5px; word-break: break-all; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🤖 CARNAGE Dashboard</h1>
+                <p>Welcome, @{{username}}! 👋</p>
+            </div>
+            
+            <div class="card">
+                <h2>📊 Your Statistics</h2>
+                {% for stat in stats %}
+                <div class="stat">
+                    <span>{{stat.name}}:</span>
+                    <strong>{{stat.value}}</strong>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <div class="card">
+                <h2>🏆 Achievements ({{achievements.unlocked}}/{{achievements.total}})</h2>
+                {% for ach in achievements.list %}
+                <div class="achievement">
+                    {{ach.emoji}} {{ach.name}}
+                </div>
+                {% endfor %}
+            </div>
+            
+            <div class="card">
+                <h2>👥 Referral Program</h2>
+                <p>Your Referrals: <strong>{{referrals.count}}</strong></p>
+                <p>Free Swaps Earned: <strong>{{referrals.free_swaps}}</strong></p>
+                <div class="referral-link">
+                    <strong>Your Referral Link:</strong><br>
+                    https://t.me/{{bot_username}}?start=ref-{{user_id}}
+                </div>
+                <p style="font-size: 12px; color: #888; margin-top: 10px;">
+                    ⭐ Each referral gives you 2 FREE swaps! No approval needed!
+                </p>
+            </div>
+            
+            <div class="card">
+                <h2>🚀 Quick Actions</h2>
+                <p><a href="https://t.me/{{bot_username}}?start=swap" style="color: #667eea;">Start New Swap</a></p>
+                <p><a href="https://t.me/{{bot_username}}?start=tutorial" style="color: #667eea;">Interactive Tutorial</a></p>
+                <p><a href="https://t.me/{{bot_username}}" style="color: #667eea;">Open Bot in Telegram</a></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return render_template_string(html_template, **user_stats)
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8271097949:AAGgugeFfdJa6NtrsrrIrIfqxcZeQ1xenA8')
-TELEGRAM_CHANNEL_ID = os.environ.get('TELEGRAM_CHANNEL_ID', '1002227808698')
 ADMIN_USER_ID = int(os.environ.get('ADMIN_USER_ID', '7575087826'))
+BOT_USERNAME = "CarnageSwapperBot"  # Change to your bot's username
 
 # Global variables
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -78,10 +149,12 @@ session_data = {}
 requests_count = 0
 errors_count = 0
 rate_limit_cooldowns = {}
+tutorial_sessions = {}
+referral_cache = {}
 
 # ==================== DATABASE SETUP ====================
 def init_database():
-    """Initialize SQLite database for user management"""
+    """Initialize SQLite database with new tables"""
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
     
@@ -98,19 +171,58 @@ def init_database():
             last_active TEXT,
             is_banned INTEGER DEFAULT 0,
             ban_reason TEXT DEFAULT NULL,
-            is_admin INTEGER DEFAULT 0
+            is_admin INTEGER DEFAULT 0,
+            referral_code TEXT UNIQUE,
+            referred_by INTEGER DEFAULT NULL,
+            total_referrals INTEGER DEFAULT 0,
+            free_swaps_earned INTEGER DEFAULT 0,
+            total_swaps INTEGER DEFAULT 0,
+            successful_swaps INTEGER DEFAULT 0,
+            join_method TEXT DEFAULT 'direct'
+        )
+    ''')
+    
+    # Achievements table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS achievements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            achievement_id TEXT,
+            achievement_name TEXT,
+            achievement_emoji TEXT,
+            unlocked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    
+    # Swap history table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS swap_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            target_username TEXT,
+            status TEXT,
+            swap_time TEXT,
+            error_message TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
     
     # Insert admin if not exists
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
     if not cursor.fetchone():
+        referral_code = generate_referral_code(ADMIN_USER_ID)
         cursor.execute('''
-            INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, join_date, last_active, is_banned, is_admin)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, 
+                              join_date, last_active, is_banned, is_admin, referral_code, join_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (ADMIN_USER_ID, "admin", "Admin", "User", 1, "9999-12-31 23:59:59", 
               datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1))
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct'))
+        
+        # Award admin achievements
+        award_achievement(ADMIN_USER_ID, "founder")
+        award_achievement(ADMIN_USER_ID, "first_user")
     
     conn.commit()
     conn.close()
@@ -118,42 +230,212 @@ def init_database():
 # Initialize database at startup
 init_database()
 
+# ==================== ACHIEVEMENT SYSTEM ====================
+ACHIEVEMENTS = {
+    "first_swap": {"name": "First Swap", "emoji": "🥇", "description": "Complete your first username swap"},
+    "swap_streak_3": {"name": "3-Day Streak", "emoji": "🔥", "description": "Swap for 3 consecutive days"},
+    "referral_master": {"name": "Referral Master", "emoji": "🤝", "description": "Refer 5 friends"},
+    "swap_pro": {"name": "Swap Pro", "emoji": "⚡", "description": "Complete 10 successful swaps"},
+    "early_adopter": {"name": "Early Adopter", "emoji": "🚀", "description": "Join first 100 users"},
+    "founder": {"name": "Founder", "emoji": "👑", "description": "Bot creator"},
+    "first_user": {"name": "Pioneer", "emoji": "🧭", "description": "First 50 users"},
+    "tutorial_complete": {"name": "Quick Learner", "emoji": "🎓", "description": "Complete interactive tutorial"},
+    "dashboard_user": {"name": "Dashboard Pro", "emoji": "📊", "description": "Visit web dashboard"},
+}
+
+def award_achievement(user_id, achievement_id):
+    """Award an achievement to user"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check if already awarded
+    cursor.execute("SELECT * FROM achievements WHERE user_id = ? AND achievement_id = ?", 
+                   (user_id, achievement_id))
+    if cursor.fetchone():
+        conn.close()
+        return False
+    
+    achievement = ACHIEVEMENTS.get(achievement_id)
+    if achievement:
+        cursor.execute('''
+            INSERT INTO achievements (user_id, achievement_id, achievement_name, achievement_emoji, unlocked_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, achievement_id, achievement['name'], achievement['emoji'], 
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        
+        conn.commit()
+        conn.close()
+        
+        # Notify user
+        try:
+            bot.send_message(
+                user_id,
+                f"🏆 *New Achievement Unlocked!*\n\n"
+                f"{achievement['emoji']} *{achievement['name']}*\n"
+                f"{achievement['description']}\n\n"
+                f"Check all achievements with /achievements",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+        
+        return True
+    
+    conn.close()
+    return False
+
+def get_user_achievements(user_id):
+    """Get user's unlocked achievements"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT achievement_id, achievement_name, achievement_emoji, unlocked_at 
+        FROM achievements WHERE user_id = ? ORDER BY unlocked_at DESC
+    ''', (user_id,))
+    
+    achievements = cursor.fetchall()
+    conn.close()
+    
+    unlocked = len(achievements)
+    total = len(ACHIEVEMENTS)
+    
+    return {
+        "unlocked": unlocked,
+        "total": total,
+        "list": [{"id": a[0], "name": a[1], "emoji": a[2], "date": a[3]} for a in achievements]
+    }
+
+def get_total_achievements_awarded():
+    """Get total achievements awarded"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM achievements")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+# ==================== REFERRAL SYSTEM ====================
+def generate_referral_code(user_id):
+    """Generate unique referral code"""
+    return f"CARNAGE{user_id}{random.randint(1000, 9999)}"
+
+def process_referral(user_id, referral_code):
+    """Process referral when new user joins"""
+    if not referral_code or referral_code == "direct":
+        return
+    
+    # Find referrer by code
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE referral_code = ?", (referral_code,))
+    result = cursor.fetchone()
+    
+    if result:
+        referrer_id = result[0]
+        
+        # Update referred user
+        cursor.execute("UPDATE users SET referred_by = ?, join_method = 'referral' WHERE user_id = ?", 
+                      (referrer_id, user_id))
+        
+        # Update referrer stats
+        cursor.execute('''
+            UPDATE users 
+            SET total_referrals = total_referrals + 1,
+                free_swaps_earned = free_swaps_earned + 2
+            WHERE user_id = ?
+        ''', (referrer_id,))
+        
+        conn.commit()
+        
+        # Award free swaps to new user (no approval needed)
+        cursor.execute("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
+                      (user_id,))
+        conn.commit()
+        
+        # Notify referrer
+        try:
+            bot.send_message(
+                referrer_id,
+                f"🎉 *New Referral!*\n\n"
+                f"Someone joined using your referral link!\n"
+                f"• You earned: **2 FREE swaps** 🆓\n"
+                f"• Total referrals: {get_user_referrals_count(referrer_id)}\n"
+                f"• Total free swaps: {get_user_free_swaps(referrer_id)}",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+        
+        # Award achievements
+        award_achievement(referrer_id, "referral_master")
+        
+        # Check if reached 5 referrals for special achievement
+        if get_user_referrals_count(referrer_id) >= 5:
+            award_achievement(referrer_id, "referral_master")
+    
+    conn.close()
+
+def get_user_referrals_count(user_id):
+    """Get count of user's referrals"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def get_user_free_swaps(user_id):
+    """Get user's free swaps count"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT free_swaps_earned FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def get_total_referrals():
+    """Get total referrals across all users"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(total_referrals) FROM users")
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result[0] else 0
+
 # ==================== DATABASE FUNCTIONS ====================
 def get_db_connection():
     """Get database connection"""
     return sqlite3.connect('users.db')
 
-def add_user(user_id, username, first_name, last_name):
-    """Add new user to database"""
+def add_user(user_id, username, first_name, last_name, referral_code="direct"):
+    """Add new user to database with referral support"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
+        user_referral_code = generate_referral_code(user_id)
         cursor.execute('''
-            INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, referral_code, join_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (user_id, username, first_name, last_name, 
               datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+              user_referral_code, 'direct'))
         conn.commit()
+        
+        # Process referral if any
+        if referral_code and referral_code != "direct":
+            process_referral(user_id, referral_code)
+        
+        # Award early adopter achievement for first 100 users
+        if get_total_users() <= 100:
+            award_achievement(user_id, "early_adopter")
+        if get_total_users() <= 50:
+            award_achievement(user_id, "first_user")
     
     conn.close()
-
-import threading
-
-def keep_alive_loop():
-    """Internal loop to keep bot awake"""
-    while True:
-        try:
-            # Make request to self
-            requests.get("https://separate-genny-1carnage1-2b4c603c.koyeb.app/ping1", timeout=10)
-        except:
-            pass
-        time.sleep(300)  # 5 minutes
-
-# Start in background thread
-threading.Thread(target=keep_alive_loop, daemon=True).start()
 
 def update_user_active(user_id):
     """Update user's last active time"""
@@ -181,80 +463,118 @@ def get_user_status(user_id):
             return "banned"
         
         if approved == 1:
-            if approved_until and approved_until != "9999-12-31 23:59:59":
-                try:
-                    expiry_date = datetime.strptime(approved_until, "%Y-%m-%d %H:%M:%S")
-                    if datetime.now() > expiry_date:
-                        return "expired"
-                    else:
-                        return "approved"
-                except:
-                    return "approved"
-            else:
-                return "approved"
+            return "approved"
     
     return "pending"
 
-def approve_user(user_id, duration_days=None):
-    """Approve user access"""
+def get_user_detailed_stats(user_id):
+    """Get detailed user statistics for dashboard"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    if duration_days:
-        if duration_days == "permanent":
-            approved_until = "9999-12-31 23:59:59"
-        else:
-            approved_until = (datetime.now() + timedelta(days=int(duration_days))).strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        approved_until = "9999-12-31 23:59:59"
+    # Get basic user info
+    cursor.execute('''
+        SELECT username, total_swaps, successful_swaps, total_referrals, free_swaps_earned
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
+    user_data = cursor.fetchone()
     
-    cursor.execute("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
-                   (approved_until, user_id))
-    conn.commit()
+    if not user_data:
+        conn.close()
+        return None
+    
+    username, total_swaps, successful_swaps, total_referrals, free_swaps = user_data
+    
+    # Calculate success rate
+    success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
+    
+    # Get recent swaps
+    cursor.execute('''
+        SELECT target_username, status, swap_time 
+        FROM swap_history 
+        WHERE user_id = ? 
+        ORDER BY swap_time DESC 
+        LIMIT 5
+    ''', (user_id,))
+    recent_swaps = cursor.fetchall()
+    
     conn.close()
+    
+    # Get achievements
+    achievements = get_user_achievements(user_id)
+    
+    return {
+        "username": username or "User",
+        "bot_username": BOT_USERNAME,
+        "user_id": user_id,
+        "stats": [
+            {"name": "Total Swaps", "value": total_swaps},
+            {"name": "Successful Swaps", "value": successful_swaps},
+            {"name": "Success Rate", "value": f"{success_rate:.1f}%"},
+            {"name": "Total Referrals", "value": total_referrals},
+            {"name": "Free Swaps Available", "value": free_swaps},
+            {"name": "Account Status", "value": "✅ Approved" if get_user_status(user_id) == "approved" else "⏳ Pending"}
+        ],
+        "achievements": achievements,
+        "referrals": {
+            "count": total_referrals,
+            "free_swaps": free_swaps
+        },
+        "recent_swaps": [
+            {"target": s[0], "status": s[1], "time": s[2]} for s in recent_swaps
+        ]
+    }
 
-def approve_all_users():
-    """Approve all pending users"""
+import threading
+
+def keep_alive_loop():
+    """Internal loop to keep bot awake"""
+    while True:
+        try:
+            # Make request to self
+            requests.get("https://separate-genny-1carnage1-2b4c603c.koyeb.app/ping1", timeout=10)
+        except:
+            pass
+        time.sleep(300)  # 5 minutes
+
+# Start in background thread
+threading.Thread(target=keep_alive_loop, daemon=True).start()
+
+def log_swap(user_id, target_username, status, error_message=None):
+    """Log swap attempt to history"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE approved = 0 AND is_banned = 0")
+    
+    cursor.execute('''
+        INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message))
+    
+    # Update user stats
+    cursor.execute("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,))
+    if status == "success":
+        cursor.execute("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,))
+    
     conn.commit()
     conn.close()
+    
+    # Award first swap achievement
+    if status == "success":
+        cursor.execute("SELECT COUNT(*) FROM swap_history WHERE user_id = ? AND status = 'success'", (user_id,))
+        success_count = cursor.fetchone()[0]
+        if success_count == 1:
+            award_achievement(user_id, "first_swap")
+        if success_count >= 10:
+            award_achievement(user_id, "swap_pro")
 
-def disapprove_all_users():
-    """Disapprove all non-admin users"""
+def get_total_swaps():
+    """Get total swaps across all users"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET approved = 0, approved_until = NULL WHERE is_admin = 0")
-    conn.commit()
+    cursor.execute("SELECT SUM(total_swaps) FROM users")
+    result = cursor.fetchone()
     conn.close()
-
-def ban_user(user_id, reason="No reason provided"):
-    """Ban a user"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", 
-                   (reason, user_id))
-    conn.commit()
-    conn.close()
-
-def unban_user(user_id):
-    """Unban a user"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_banned = 0, ban_reason = NULL WHERE user_id = ?", 
-                   (user_id,))
-    conn.commit()
-    conn.close()
-
-def get_all_users():
-    """Get all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, first_name, approved, approved_until, is_banned FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    return users
+    return result[0] if result[0] else 0
 
 def get_total_users():
     """Get total user count"""
@@ -275,37 +595,41 @@ def get_active_users_count():
     conn.close()
     return count
 
-def broadcast_message():
-    """Get all user IDs for broadcasting"""
+def approve_user(user_id, duration_days=None):
+    """Approve user access"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE approved = 1 AND is_banned = 0")
-    users = [row[0] for row in cursor.fetchall()]
+    
+    if duration_days:
+        if duration_days == "permanent":
+            approved_until = "9999-12-31 23:59:59"
+        else:
+            approved_until = (datetime.now() + timedelta(days=int(duration_days))).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        approved_until = "9999-12-31 23:59:59"
+    
+    cursor.execute("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
+                   (approved_until, user_id))
+    conn.commit()
+    conn.close()
+
+def ban_user(user_id, reason="No reason provided"):
+    """Ban a user"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", 
+                   (reason, user_id))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    """Get all users"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, first_name, approved, approved_until, is_banned, total_referrals FROM users")
+    users = cursor.fetchall()
     conn.close()
     return users
-
-# ==================== WELCOME MESSAGE ====================
-WELCOME_MESSAGE = """
-🤖 *Welcome to CARNAGE Swapper Bot* 🤖
-
-*What this bot does:*
-✨ *Instagram Username Swapping* - Swap usernames between accounts
-🔒 *Secure Session Management* - Your sessions are encrypted
-⚡ *Fast & Reliable* - High success rate swapping
-📱 *Admin Notifications* - Get swap notifications directly
-🔧 *Multiple Modes* - Main swap, backup mode, thread swapping
-
-*How to get access:*
-1️⃣ Send /start to begin
-2️⃣ Contact admin @CARNAGEV1 for approval
-3️⃣ Wait for admin to approve your access
-4️⃣ Once approved, you can use all features
-
-*Note:* Only approved users can access bot features. 
-Please be patient while waiting for approval.
-
-*Admin Commands:* /approve, /users, /broadcast, /ban, /unban, /stats
-"""
 
 # ==================== HELPER FUNCTIONS ====================
 def is_admin(user_id):
@@ -324,49 +648,6 @@ def send_to_admin(message_text, parse_mode="Markdown"):
     except Exception as e:
         print(f"Failed to send message to admin: {e}")
 
-def init_session_data(chat_id):
-    if chat_id not in session_data:
-        session_data[chat_id] = {
-            "main": None, "main_username": None, "main_validated_at": None,
-            "target": None, "target_username": None, "target_validated_at": None,
-            "backup": None, "backup_username": None,
-            "bio": None, "name": None,
-            "swapper_threads": 1,
-            "current_menu": "main",
-            "previous_menu": None
-        }
-
-def clear_session_data(chat_id, session_type):
-    if session_type == "main":
-        session_data[chat_id]["main"] = None
-        session_data[chat_id]["main_username"] = None
-        session_data[chat_id]["main_validated_at"] = None
-    elif session_type == "target":
-        session_data[chat_id]["target"] = None
-        session_data[chat_id]["target_username"] = None
-        session_data[chat_id]["target_validated_at"] = None
-    elif session_type == "backup":
-        session_data[chat_id]["backup"] = None
-        session_data[chat_id]["backup_username"] = None
-    elif session_type == "close":
-        session_data[chat_id]["main"] = None
-        session_data[chat_id]["main_username"] = None
-        session_data[chat_id]["main_validated_at"] = None
-        session_data[chat_id]["target"] = None
-        session_data[chat_id]["target_username"] = None
-        session_data[chat_id]["target_validated_at"] = None
-
-def check_cooldown(chat_id):
-    if chat_id in rate_limit_cooldowns:
-        cooldown_until = rate_limit_cooldowns[chat_id]
-        if time.time() < cooldown_until:
-            bot.send_message(chat_id, "<b>⚠️ Rate limit reached. Please wait 30 minutes.</b>", parse_mode='HTML')
-            return False
-    return True
-
-def set_cooldown(chat_id):
-    rate_limit_cooldowns[chat_id] = time.time() + 1800  # 30-minute cooldown
-
 def create_reply_menu(buttons, row_width=2, add_back=True):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
     for i in range(0, len(buttons), row_width):
@@ -375,47 +656,6 @@ def create_reply_menu(buttons, row_width=2, add_back=True):
     if add_back:
         markup.add(KeyboardButton("Back"))
     return markup
-
-def validate_session(session_id, chat_id, session_type):
-    print(f"Validating session for chat_id: {chat_id}, type: {session_type}, session_id: {session_id}")
-    url = "https://i.instagram.com/api/v1/accounts/current_user/"
-    headers = {
-        "User-Agent": "Instagram 194.0.0.36.172 Android (28/9; 440dpi; 1080x1920; Google; Pixel 3; blueline; blueline; en_US)",
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "en-US",
-        "X-IG-App-ID": "567067343352427",
-        "X-IG-Capabilities": "3brTvw==",
-        "X-IG-Connection-Type": "WIFI",
-        "Cookie": f"sessionid={session_id}; csrftoken={''.join(random.choices(string.ascii_letters + string.digits, k=32))}",
-        "Host": "i.instagram.com"
-    }
-    back_menu = "swapper" if session_type == "backup" else "main"
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        print(f"Validation response: {response.status_code}, {response.text[:100]}")
-        if response.status_code == 200:
-            data = response.json()
-            if "user" in data and "username" in data["user"]:
-                return data["user"]["username"]
-            else:
-                bot.send_message(chat_id, "<b>❌ Session valid but no username found</b>", parse_mode='HTML')
-        elif response.status_code == 401:
-            bot.send_message(chat_id, "<b>❌ Invalid or expired session ID</b>", parse_mode='HTML')
-        elif response.status_code == 429:
-            set_cooldown(chat_id)
-            bot.send_message(chat_id, "<b>⚠️ Rate limit reached. Please wait 30 minutes.</b>", parse_mode='HTML')
-        else:
-            bot.send_message(chat_id, f"<b>❌ Unexpected response: {response.status_code}</b>", parse_mode='HTML')
-    except requests.exceptions.Timeout:
-        bot.send_message(chat_id, "<b>❌ Request timed out</b>", parse_mode='HTML')
-    except Exception as e:
-        bot.send_message(chat_id, f"<b>❌ Validation error: {str(e)}</b>", parse_mode='HTML')
-    time.sleep(2)
-    bot.send_message(chat_id, "<b>❌ Failed to log in</b>", parse_mode='HTML')
-    clear_session_data(chat_id, session_type)
-    session_data[chat_id]["current_menu"] = back_menu
-    return None
 
 def send_admin_notification(username, action, user_info=""):
     """Send swap notification to admin"""
@@ -448,228 +688,129 @@ def send_admin_notification(username, action, user_info=""):
     
     send_to_admin(notification)
 
-def send_channel_notification(username, action):
-    """Send notification to Telegram channel (optional)"""
-    if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != "-100":
-        try:
-            username_clean = username.lstrip('@')
-            message = f"<b>🔁 [#] {username} {action}!</b>"
-            bot.send_message(TELEGRAM_CHANNEL_ID, message, parse_mode="HTML")
-        except:
-            pass
-
-def generate_random_username():
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
-
-def change_username_account1(chat_id, session_id, csrf_token, random_username):
-    global requests_count, errors_count
-    url = 'https://www.instagram.com/api/v1/web/accounts/edit/'
-    data = {
-        'first_name': session_data[chat_id].get('name', 'CARNAGE User'),
-        'email': 'carnage@example.com',
-        'username': random_username,
-        'phone_number': '+0000000000',
-        'biography': session_data[chat_id].get('bio', 'Swapped by CARNAGE'),
-        'external_url': 'https://t.me/CARNAGEV1',
-        'chaining_enabled': 'on'
+# ==================== TUTORIAL SYSTEM ====================
+TUTORIAL_STEPS = [
+    {
+        "title": "🎯 Welcome to CARNAGE Tutorial!",
+        "message": "I'll guide you through using the bot step by step.\n\n*Ready to become a swap master?*",
+        "buttons": ["Let's Go! 🚀", "Skip Tutorial"]
+    },
+    {
+        "title": "📱 Step 1: Get Instagram Session",
+        "message": "You need an Instagram *session ID* to swap.\n\n*How to get it:*\n1. Login to Instagram\n2. Use browser DevTools (F12)\n3. Copy 'sessionid' cookie\n\n*Need help?* Google 'get Instagram sessionid'",
+        "buttons": ["Got it! ✅", "Show Example"]
+    },
+    {
+        "title": "🤖 Step 2: Add Main Session",
+        "message": "Now add your session to the bot:\n\n1. Click *'Main Session'* in menu\n2. Paste your session ID\n3. Bot will validate it\n\n*Tip:* This is the account that will GET the new username",
+        "buttons": ["Try Now", "Back"]
+    },
+    {
+        "title": "🎯 Step 3: Add Target Session",
+        "message": "Add the target account session:\n\n1. Click *'Target Session'*\n2. Paste target session ID\n3. This account will LOSE its username\n\n*Note:* Both accounts must be logged in",
+        "buttons": ["Got it", "Back"]
+    },
+    {
+        "title": "⚡ Step 4: Run Your First Swap!",
+        "message": "Time to swap usernames!\n\n1. Go to *'Swapper'* menu\n2. Click *'Run Main Swap'*\n3. Watch the magic happen! ✨\n\n*Bonus:* Each swap is logged in your history!",
+        "buttons": ["Ready to Swap!", "Back"]
+    },
+    {
+        "title": "🏆 Step 5: Earn Free Swaps!",
+        "message": "Share your referral link to get *FREE swaps*!\n\n*How it works:*\n1. Use /refer command\n2. Share your link\n3. Get 2 FREE swaps per referral!\n\n*No approval needed for referrals!*",
+        "buttons": ["Show My Link", "Back"]
+    },
+    {
+        "title": "🎓 Tutorial Complete!",
+        "message": "You're now a CARNAGE Pro! 🎉\n\n*Quick Commands:*\n/start - Main menu\n/dashboard - Web dashboard\n/stats - Your statistics\n/refer - Get referral link\n/tutorial - Repeat tutorial\n\n*Happy Swapping!* 🔄",
+        "buttons": ["Start Swapping!", "View Dashboard"]
     }
-    headers = {
-        'accept': '*/*',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'cookie': f'mid=YQvmcwAEAAFVrBezgjwUhwEQuv3c; csrftoken={csrf_token}; sessionid={session_id};',
-        'origin': 'https://www.instagram.com',
-        'referer': 'https://www.instagram.com/accounts/edit/',
-        'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'x-asbd-id': '129477',
-        'x-csrftoken': csrf_token,
-        'x-ig-app-id': '936619743392459',
-        'x-ig-www-claim': 'hmac.AR0EWvjix_XsqAIjAt7fjL3qLwQKCRTB8UMXTGL5j7pkgSqj',
-        'x-instagram-ajax': '1014730915',
-        'x-requested-with': 'XMLHttpRequest'
-    }
+]
+
+def show_tutorial_step(chat_id, step_index):
+    """Show tutorial step"""
+    if step_index >= len(TUTORIAL_STEPS):
+        return
     
-    try:
-        response = requests.post(url, headers=headers, data=data, timeout=10)
-        requests_count += 1
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                if data.get("status") == "ok":
-                    return random_username
-                else:
-                    error_message = data.get("message", "Unknown error")
-                    bot.send_message(chat_id, f"<b>❌ Failed to change username: {error_message}</b>", parse_mode='HTML')
-                    return None
-            except json.JSONDecodeError:
-                bot.send_message(chat_id, "<b>❌ Invalid JSON response from Instagram</b>", parse_mode='HTML')
-                return None
-        elif response.status_code == 429:
-            errors_count += 1
-            set_cooldown(chat_id)
-            bot.send_message(chat_id, "<b>⚠️ Rate limit reached. Please wait 30 minutes.</b>", parse_mode='HTML')
-            return None
-        elif response.status_code == 400:
-            errors_count += 1
-            bot.send_message(chat_id, "<b>❌ Invalid request (bad session or username)</b>", parse_mode='HTML')
-            return None
-        else:
-            errors_count += 1
-            bot.send_message(chat_id, f"<b>❌ Failed to change username: {response.status_code}</b>", parse_mode='HTML')
-            return None
-    except Exception as e:
-        errors_count += 1
-        bot.send_message(chat_id, f"<b>❌ Error with CARNAGE Swap Target Session: {str(e)}</b>", parse_mode='HTML')
-        return None
+    step = TUTORIAL_STEPS[step_index]
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    
+    for i in range(0, len(step["buttons"]), 2):
+        row = step["buttons"][i:i+2]
+        markup.add(*[KeyboardButton(btn) for btn in row])
+    
+    bot.send_message(
+        chat_id,
+        f"*{step['title']}*\n\n{step['message']}",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+    
+    # Store current step
+    tutorial_sessions[chat_id] = step_index
 
-def revert_username(chat_id, session_id, csrf_token, original_username):
-    url = 'https://www.instagram.com/api/v1/web/accounts/edit/'
-    data = {
-        'first_name': session_data[chat_id].get('name', 'CARNAGE User'),
-        'email': 'carnage@example.com',
-        'username': original_username.lstrip('@'),
-        'phone_number': '+0000000000',
-        'biography': session_data[chat_id].get('bio', 'Swapped by CARNAGE'),
-        'external_url': 'https://t.me/CARNAGEV1',
-        'chaining_enabled': 'on'
-    }
-    headers = {
-        'accept': '*/*',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'cookie': f'mid=YQvmcwAEAAFVrBezgjwUhwEQuv3c; csrftoken={csrf_token}; sessionid={session_id};',
-        'origin': 'https://www.instagram.com',
-        'referer': 'https://www.instagram.com/accounts/edit/',
-        'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'x-asbd-id': '129477',
-        'x-csrftoken': csrf_token,
-        'x-ig-app-id': '936619743392459',
-        'x-ig-www-claim': 'hmac.AR0EWvjix_XsqAIjAt7fjL3qLwQKCRTB8UMXTGL5j7pkgSqj',
-        'x-instagram-ajax': '1014730915',
-        'x-requested-with': 'XMLHttpRequest'
-    }
-    try:
-        response = requests.post(url, headers=headers, data=data, timeout=10)
-        return response.status_code == 200 and response.json().get("status") == "ok"
-    except:
+def handle_tutorial_response(chat_id, text):
+    """Handle tutorial button clicks"""
+    if chat_id not in tutorial_sessions:
         return False
-
-def change_username_account2(chat_id, session_id, csrf_token, target_username):
-    global requests_count, errors_count
-    url = 'https://www.instagram.com/api/v1/web/accounts/edit/'
-    data = {
-        'first_name': session_data[chat_id].get('name', 'CARNAGE User'),
-        'email': 'carnage@example.com',
-        'username': target_username.lstrip('@'),
-        'phone_number': '+0000000000',
-        'biography': session_data[chat_id].get('bio', 'Swapped by CARNAGE'),
-        'external_url': 'https://t.me/CARNAGEV1',
-        'chaining_enabled': 'on'
-    }
-    headers = {
-        'accept': '*/*',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'cookie': f'mid=YQvmcwAEAAFVrBezgjwUhwEQuv3c; csrftoken={csrf_token}; sessionid={session_id};',
-        'origin': 'https://www.instagram.com',
-        'referer': 'https://www.instagram.com/accounts/edit/',
-        'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'x-asbd-id': '129477',
-        'x-csrftoken': csrf_token,
-        'x-ig-app-id': '936619743392459',
-        'x-ig-www-claim': 'hmac.AR0EWvjix_XsqAIjAt7fjL3qLwQKCRTB8UMXTGL5j7pkgSqj',
-        'x-instagram-ajax': '1014730915',
-        'x-requested-with': 'XMLHttpRequest'
-    }
     
-    try:
-        if not check_cooldown(chat_id):
-            return False
-        response = requests.post(url, headers=headers, data=data, timeout=10)
-        requests_count += 1
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                if data.get("status") == "ok":
-                    return True
-                else:
-                    error_message = data.get("message", "Unknown error")
-                    bot.send_message(chat_id, f"<b>❌ Failed to change username: {error_message}</b>", parse_mode='HTML')
-                    return False
-            except json.JSONDecodeError:
-                bot.send_message(chat_id, "<b>❌ Invalid JSON response from Instagram</b>", parse_mode='HTML')
-                return False
-        elif response.status_code == 429:
-            errors_count += 1
-            set_cooldown(chat_id)
-            bot.send_message(chat_id, "<b>⚠️ Rate limit reached. Please wait 30 minutes.</b>", parse_mode='HTML')
-            return False
-        elif response.status_code == 400:
-            errors_count += 1
-            bot.send_message(chat_id, "<b>❌ Invalid request (bad session or username)</b>", parse_mode='HTML')
-            return False
-        else:
-            errors_count += 1
-            bot.send_message(chat_id, f"<b>❌ Failed to change username: {response.status_code}</b>", parse_mode='HTML')
-            return False
-    except Exception as e:
-        errors_count += 1
-        bot.send_message(chat_id, f"<b>❌ Error changing username: {str(e)}</b>", parse_mode='HTML')
-        return False
-
-def show_main_menu(chat_id):
-    if not is_user_approved(chat_id):
-        return
+    current_step = tutorial_sessions[chat_id]
     
-    session_data[chat_id]["current_menu"] = "main"
-    session_data[chat_id]["previous_menu"] = None
-    buttons = [
-        "Main Session", "Check Block", "Target Session",
-        "Swapper", "Settings", "Close Bot"
-    ]
-    markup = create_reply_menu(buttons, row_width=2, add_back=False)
-    bot.send_message(chat_id, "<b>🤖 CARNAGE Swapper - Choose A Mode</b>", parse_mode='HTML', reply_markup=markup)
-
-def show_swapper_menu(chat_id):
-    if not is_user_approved(chat_id):
-        return
+    if text == "Back":
+        if current_step > 0:
+            show_tutorial_step(chat_id, current_step - 1)
+        return True
     
-    session_data[chat_id]["current_menu"] = "swapper"
-    session_data[chat_id]["previous_menu"] = "main"
-    buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap"]
-    markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>🔄 CARNAGE Swapper - Select Option</b>", parse_mode='HTML', reply_markup=markup)
-
-def show_settings_menu(chat_id):
-    if not is_user_approved(chat_id):
-        return
+    elif text == "Skip Tutorial":
+        del tutorial_sessions[chat_id]
+        bot.send_message(chat_id, "Tutorial skipped! Use /tutorial anytime to restart.", 
+                        reply_markup=create_reply_menu(["Main Menu"]))
+        return True
     
-    session_data[chat_id]["current_menu"] = "settings"
-    session_data[chat_id]["previous_menu"] = "main"
-    buttons = ["Bio", "Name"]
-    markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>⚙️ CARNAGE Settings - Select Option</b>", parse_mode='HTML', reply_markup=markup)
+    elif "Let's Go" in text or "Got it" in text or "Ready" in text or "Try Now" in text:
+        show_tutorial_step(chat_id, current_step + 1)
+        if current_step + 1 >= len(TUTORIAL_STEPS):
+            award_achievement(chat_id, "tutorial_complete")
+            del tutorial_sessions[chat_id]
+        return True
+    
+    elif text == "Show Example":
+        bot.send_message(
+            chat_id,
+            "*Session ID Example:*\n\n"
+            "`1234567890%3Aabc123%3Axyz456`\n\n"
+            "It usually looks like random letters/numbers with % symbols.",
+            parse_mode="Markdown"
+        )
+        return True
+    
+    elif text == "Show My Link":
+        referral_link = f"https://t.me/{BOT_USERNAME}?start=ref-{chat_id}"
+        bot.send_message(
+            chat_id,
+            f"*Your Referral Link:*\n\n{referral_link}\n\n"
+            f"Share this link to get 2 FREE swaps per friend who joins! 🆓",
+            parse_mode="Markdown"
+        )
+        return True
+    
+    elif text == "View Dashboard":
+        dashboard_url = f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{chat_id}"
+        bot.send_message(
+            chat_id,
+            f"*Your Dashboard:*\n\n{dashboard_url}\n\n"
+            f"Visit to see your stats, achievements, and referrals! 📊",
+            parse_mode="Markdown"
+        )
+        award_achievement(chat_id, "dashboard_user")
+        return True
+    
+    elif text == "Start Swapping!":
+        del tutorial_sessions[chat_id]
+        show_main_menu(chat_id)
+        return True
+    
+    return False
 
 # ==================== COMMAND HANDLERS ====================
 @bot.message_handler(commands=['start'])
@@ -679,35 +820,385 @@ def start_command(message):
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name or ""
     
-    add_user(user_id, username, first_name, last_name)
+    # Check for referral parameter
+    referral_code = "direct"
+    if len(message.text.split()) > 1:
+        param = message.text.split()[1]
+        if param.startswith("ref-"):
+            referral_code = param[4:]  # Remove "ref-" prefix
+        elif param == "tutorial":
+            start_tutorial_command(message)
+            return
+        elif param == "swap":
+            if is_user_approved(user_id):
+                show_swapper_menu(user_id)
+            else:
+                bot.send_message(user_id, "Please complete /start first")
+            return
     
-    bot.send_message(user_id, WELCOME_MESSAGE, parse_mode="Markdown")
+    add_user(user_id, username, first_name, last_name, referral_code)
+    update_user_active(user_id)
     
-    admin_notification = f"""
-🆕 *New User Started CARNAGE Bot*
-    
-👤 User ID: `{user_id}`
-📛 Name: {first_name} {last_name}
-🔗 Username: @{username if username else 'N/A'}
-⏰ Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    welcome_message = f"""
+🤖 *Welcome to CARNAGE Swapper Bot* {first_name}! 🎉
 
-📍 Status: Pending Approval
-🔧 Action: Use /approve {user_id} to grant access
+*What's New in v3.0:*
+✨ *Referral System* - Get 2 FREE swaps per friend!
+📊 *Web Dashboard* - Track your stats online
+🏆 *Achievements* - Unlock badges as you swap
+🎓 *Interactive Tutorial* - Learn step by step
+📈 *Detailed Analytics* - See your swap history
+
+*Quick Start:*
+1️⃣ Add Instagram sessions
+2️⃣ Swap usernames instantly
+3️⃣ Refer friends for FREE swaps
+4️⃣ Track progress on dashboard
+
+*Referral Bonus:* 🎁
+• Share your link → Get 2 FREE swaps per friend!
+• No approval needed for referrals!
+
+Use /tutorial for guided tour or /help for commands.
 """
-    send_to_admin(admin_notification)
     
-    if is_user_approved(user_id):
-        init_session_data(user_id)
+    bot.send_message(user_id, welcome_message, parse_mode="Markdown")
+    
+    # Auto-approve if came through referral
+    if referral_code != "direct":
+        bot.send_message(user_id, "✅ *Approved via referral!* You can start swapping immediately!", parse_mode="Markdown")
+        show_main_menu(user_id)
+    elif is_user_approved(user_id):
         show_main_menu(user_id)
     else:
         bot.send_message(
             user_id,
-            "⏳ *Your access is pending approval.*\n\n"
-            "Please contact @CARNAGEV1 for access approval.\n"
-            "You'll be notified once approved.",
+            "⏳ *Access pending approval*\n\n"
+            "Contact @CARNAGEV1 or use referral system for instant access!\n"
+            "Tip: Get a friend to refer you for instant approval! 🎁",
             parse_mode="Markdown"
         )
 
+@bot.message_handler(commands=['tutorial'])
+def start_tutorial_command(message):
+    """Start interactive tutorial"""
+    user_id = message.chat.id
+    tutorial_sessions[user_id] = 0
+    show_tutorial_step(user_id, 0)
+
+@bot.message_handler(commands=['dashboard'])
+def dashboard_command(message):
+    """Send user their dashboard link"""
+    user_id = message.from_user.id
+    dashboard_url = f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}"
+    
+    bot.send_message(
+        user_id,
+        f"📊 *Your Personal Dashboard*\n\n"
+        f"Visit: {dashboard_url}\n\n"
+        f"• View your statistics 📈\n"
+        f"• Track achievements 🏆\n"
+        f"• Check referral progress 👥\n"
+        f"• See swap history 🔄",
+        parse_mode="Markdown"
+    )
+    
+    # Award achievement
+    award_achievement(user_id, "dashboard_user")
+
+@bot.message_handler(commands=['refer'])
+def referral_command(message):
+    """Generate referral link"""
+    user_id = message.from_user.id
+    referral_link = f"https://t.me/{BOT_USERNAME}?start=ref-{user_id}"
+    referrals_count = get_user_referrals_count(user_id)
+    free_swaps = get_user_free_swaps(user_id)
+    
+    response = f"""
+🎁 *CARNAGE Referral Program*
+
+*Your Referral Link:*
+`{referral_link}`
+
+*How it works:*
+1. Share your link with friends
+2. When they join using your link:
+   • They get instant approval ✅
+   • You get 2 FREE swaps! 🆓
+3. No limits - refer unlimited friends!
+
+*Your Stats:*
+• Total Referrals: {referrals_count}
+• Free Swaps Earned: {free_swaps}
+• Pending Approval: {"No - Instant for referrals!"}
+
+*Pro Tip:* Share in Instagram/Twitter bios for maximum referrals!
+"""
+    
+    bot.send_message(user_id, response, parse_mode="Markdown")
+    
+    # Create share button
+    markup = InlineKeyboardMarkup()
+    share_text = f"Join CARNAGE Swapper Bot for Instagram username swapping! Get instant approval with my link: {referral_link}"
+    markup.add(InlineKeyboardButton("📤 Share Link", switch_inline_query=share_text))
+    
+    bot.send_message(user_id, "Click below to share:", reply_markup=markup)
+
+@bot.message_handler(commands=['achievements'])
+def achievements_command(message):
+    """Show user's achievements"""
+    user_id = message.from_user.id
+    achievements = get_user_achievements(user_id)
+    
+    response = f"""
+🏆 *Your Achievements*
+
+*Progress:* {achievements['unlocked']}/{achievements['total']} unlocked
+
+*Unlocked Achievements:*
+"""
+    
+    if achievements['list']:
+        for ach in achievements['list']:
+            response += f"\n{ach['emoji']} *{ach['name']}* - {ach['date'].split()[0]}"
+    else:
+        response += "\nNo achievements yet! Start swapping to unlock them! 🔄"
+    
+    # Add locked achievements preview
+    response += "\n\n*Locked Achievements:*"
+    locked_count = 0
+    for ach_id, ach_data in ACHIEVEMENTS.items():
+        if ach_id not in [a['id'] for a in achievements['list']]:
+            if locked_count < 5:  # Show only 5 locked
+                response += f"\n🔒 {ach_data['name']}"
+                locked_count += 1
+    
+    if locked_count >= 5:
+        response += f"\n... and {achievements['total'] - achievements['unlocked'] - 5} more"
+    
+    bot.send_message(user_id, response, parse_mode="Markdown")
+
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    """Show user statistics"""
+    user_id = message.from_user.id
+    stats = get_user_detailed_stats(user_id)
+    
+    if not stats:
+        bot.send_message(user_id, "No statistics available yet.")
+        return
+    
+    response = f"""
+📊 *Your Statistics*
+
+*Basic Info:*
+• Username: @{stats['username']}
+• User ID: `{user_id}`
+• Status: {"✅ Approved" if is_user_approved(user_id) else "⏳ Pending"}
+
+*Swap Stats:*
+• Total Swaps: {stats['stats'][0]['value']}
+• Successful: {stats['stats'][1]['value']}
+• Success Rate: {stats['stats'][2]['value']}
+
+*Referral Stats:*
+• Total Referrals: {stats['referrals']['count']}
+• Free Swaps Available: {stats['referrals']['free_swaps']}
+
+*Achievements:* {stats['achievements']['unlocked']}/{stats['achievements']['total']} unlocked
+
+*Dashboard:* https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}
+"""
+    
+    bot.send_message(user_id, response, parse_mode="Markdown")
+
+@bot.message_handler(commands=['leaderboard'])
+def leaderboard_command(message):
+    """Show leaderboard"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Top by successful swaps
+    cursor.execute('''
+        SELECT username, successful_swaps, total_referrals 
+        FROM users 
+        WHERE username IS NOT NULL 
+        ORDER BY successful_swaps DESC 
+        LIMIT 10
+    ''')
+    top_swappers = cursor.fetchall()
+    
+    # Top by referrals
+    cursor.execute('''
+        SELECT username, total_referrals, successful_swaps
+        FROM users 
+        WHERE username IS NOT NULL 
+        ORDER BY total_referrals DESC 
+        LIMIT 10
+    ''')
+    top_referrers = cursor.fetchall()
+    
+    conn.close()
+    
+    response = """
+🏆 *CARNAGE Leaderboard*
+
+*Top Swappers:*
+"""
+    
+    for i, (username, swaps, refs) in enumerate(top_swappers, 1):
+        emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][i-1]
+        response += f"\n{emoji} @{username}: {swaps} swaps"
+    
+    response += "\n\n*Top Referrers:*"
+    
+    for i, (username, refs, swaps) in enumerate(top_referrers, 1):
+        emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][i-1]
+        response += f"\n{emoji} @{username}: {refs} referrals"
+    
+    bot.send_message(message.chat.id, response, parse_mode="Markdown")
+
+@bot.message_handler(commands=['history'])
+def history_command(message):
+    """Show user's swap history"""
+    user_id = message.from_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT target_username, status, swap_time 
+        FROM swap_history 
+        WHERE user_id = ? 
+        ORDER BY swap_time DESC 
+        LIMIT 10
+    ''', (user_id,))
+    
+    history = cursor.fetchall()
+    conn.close()
+    
+    if not history:
+        bot.send_message(user_id, "No swap history yet. Start swapping! 🔄")
+        return
+    
+    response = "📜 *Your Recent Swaps*\n\n"
+    
+    for target, status, swap_time in history:
+        status_emoji = "✅" if status == "success" else "❌"
+        date_str = datetime.strptime(swap_time, "%Y-%m-%d %H:%M:%S").strftime("%b %d")
+        response += f"{status_emoji} *{target}* - {date_str}\n"
+    
+    response += f"\nView full history on your dashboard!"
+    
+    bot.send_message(user_id, response, parse_mode="Markdown")
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    """Show help menu"""
+    help_text = """
+🆘 *CARNAGE Bot Help*
+
+*Basic Commands:*
+/start - Start the bot
+/help - Show this help
+/tutorial - Interactive tutorial
+
+*User Features:*
+/dashboard - Your personal dashboard
+/stats - Your statistics
+/achievements - Your unlocked badges
+/history - Your swap history
+/refer - Referral program
+/leaderboard - Top users
+
+*Admin Commands:* (Admin only)
+/approve - Approve user access
+/users - List all users
+/broadcast - Send message to all
+/ban - Ban user
+
+*Getting Started:*
+1. Use /tutorial for step-by-step guide
+2. Add Instagram sessions
+3. Start swapping!
+4. Refer friends for FREE swaps
+
+*Need Help?*
+Contact: @CARNAGEV1
+Visit Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app
+"""
+    
+    bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
+
+# ==================== INLINE QUERY HANDLER ====================
+@bot.inline_handler(lambda query: True)
+def inline_query_handler(inline_query):
+    """Handle inline queries"""
+    try:
+        user_id = inline_query.from_user.id
+        
+        results = [
+            InlineQueryResultArticle(
+                id='1',
+                title='📊 My Dashboard',
+                description='View your personal dashboard',
+                input_message_content=InputTextMessageContent(
+                    f"📊 *My CARNAGE Dashboard*\n\n"
+                    f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}\n\n"
+                    f"Track stats, achievements, and referrals!",
+                    parse_mode='Markdown'
+                ),
+                thumb_url='https://img.icons8.com/color/96/000000/dashboard.png'
+            ),
+            InlineQueryResultArticle(
+                id='2',
+                title='🎁 Referral Link',
+                description='Share to get FREE swaps!',
+                input_message_content=InputTextMessageContent(
+                    f"🎁 *Join CARNAGE Swapper Bot!*\n\n"
+                    f"Get instant approval with my link:\n"
+                    f"https://t.me/{BOT_USERNAME}?start=ref-{user_id}\n\n"
+                    f"• Instagram username swapping\n"
+                    f"• No approval needed for referrals\n"
+                    f"• 2 FREE swaps per referral!",
+                    parse_mode='Markdown'
+                ),
+                thumb_url='https://img.icons8.com/color/96/000000/gift.png'
+            ),
+            InlineQueryResultArticle(
+                id='3',
+                title='📈 Bot Statistics',
+                description='View bot stats',
+                input_message_content=InputTextMessageContent(
+                    f"🤖 *CARNAGE Bot Stats*\n\n"
+                    f"• Total Users: {get_total_users()}\n"
+                    f"• Total Swaps: {get_total_swaps()}\n"
+                    f"• Total Referrals: {get_total_referrals()}\n\n"
+                    f"Join: https://t.me/{BOT_USERNAME}",
+                    parse_mode='Markdown'
+                ),
+                thumb_url='https://img.icons8.com/color/96/000000/statistics.png'
+            ),
+            InlineQueryResultArticle(
+                id='4',
+                title='🔄 Quick Swap',
+                description='Start a new swap',
+                input_message_content=InputTextMessageContent(
+                    "🔄 *Start a New Swap*\n\n"
+                    "1. Add Main Session\n"
+                    "2. Add Target Session\n"
+                    "3. Run Swap\n\n"
+                    f"Start: https://t.me/{BOT_USERNAME}?start=swap",
+                    parse_mode='Markdown'
+                ),
+                thumb_url='https://img.icons8.com/color/96/000000/swap.png'
+            ),
+        ]
+        
+        bot.answer_inline_query(inline_query.id, results, cache_time=1)
+    except Exception as e:
+        print(f"Inline query error: {e}")
+
+# ==================== ADMIN COMMANDS ====================
 @bot.message_handler(commands=['approve'])
 def approve_command(message):
     user_id = message.from_user.id
@@ -768,28 +1259,6 @@ def approve_command(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
-@bot.message_handler(commands=['approveall'])
-def approve_all_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "🚫 *Admin access required!*", parse_mode="Markdown")
-        return
-    
-    approve_all_users()
-    bot.reply_to(message, "✅ All pending users have been approved!")
-
-@bot.message_handler(commands=['disapproveall'])
-def disapprove_all_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "🚫 *Admin access required!*", parse_mode="Markdown")
-        return
-    
-    disapprove_all_users()
-    bot.reply_to(message, "✅ All non-admin users have been disapproved!")
-
 @bot.message_handler(commands=['users'])
 def users_command(message):
     user_id = message.from_user.id
@@ -806,7 +1275,7 @@ def users_command(message):
     
     response = "👥 *CARNAGE Bot Users*\n\n"
     for user in users:
-        user_id, username, first_name, approved, approved_until, is_banned = user
+        user_id, username, first_name, approved, approved_until, is_banned, referrals = user
         
         status = "✅ Approved" if approved == 1 else "⏳ Pending"
         if is_banned == 1:
@@ -815,20 +1284,9 @@ def users_command(message):
         username_display = f"@{username}" if username else "No username"
         name_display = f"{first_name}" if first_name else "Unknown"
         
-        expiry_text = ""
-        if approved_until and approved_until != "9999-12-31 23:59:59":
-            try:
-                expiry_date = datetime.strptime(approved_until, "%Y-%m-%d %H:%M:%S")
-                if expiry_date < datetime.now():
-                    expiry_text = " (Expired)"
-                else:
-                    expiry_text = f" (Expires: {expiry_date.strftime('%Y-%m-%d')})"
-            except:
-                pass
-        
         response += f"🆔 `{user_id}`\n"
         response += f"👤 {name_display} {username_display}\n"
-        response += f"📊 {status}{expiry_text}\n"
+        response += f"📊 {status} | 👥 {referrals} refs\n"
         response += "─" * 20 + "\n"
     
     total_users = get_total_users()
@@ -839,6 +1297,7 @@ def users_command(message):
     response += f"• Active (24h): {active_users}\n"
     response += f"• Pending Approval: {sum(1 for u in users if u[3] == 0 and u[5] == 0)}\n"
     response += f"• Banned: {sum(1 for u in users if u[5] == 1)}\n"
+    response += f"• Total Referrals: {get_total_referrals()}\n"
     
     if len(response) > 4000:
         parts = [response[i:i+4000] for i in range(0, len(response), 4000)]
@@ -846,85 +1305,6 @@ def users_command(message):
             bot.send_message(message.chat.id, part, parse_mode="Markdown")
     else:
         bot.send_message(message.chat.id, response, parse_mode="Markdown")
-
-@bot.message_handler(commands=['ban'])
-def ban_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "🚫 *Admin access required!*", parse_mode="Markdown")
-        return
-    
-    try:
-        args = message.text.split()
-        if len(args) < 2:
-            bot.reply_to(message, 
-                        "⚠️ *Usage:* `/ban <user_id> [reason]`\n"
-                        "Example: `/ban 123456789 Spamming`",
-                        parse_mode="Markdown")
-            return
-        
-        target_user_id = int(args[1])
-        reason = " ".join(args[2:]) if len(args) > 2 else "No reason provided"
-        
-        ban_user(target_user_id, reason)
-        
-        bot.reply_to(message, f"🚫 User `{target_user_id}` has been banned.\nReason: {reason}")
-        
-        try:
-            bot.send_message(
-                target_user_id,
-                f"🚫 *Account Banned*\n\n"
-                f"Your access to CARNAGE Swapper Bot has been suspended.\n"
-                f"Reason: {reason}\n\n"
-                f"Contact @CARNAGEV1 if you believe this is a mistake.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-    except ValueError:
-        bot.reply_to(message, "❌ Invalid user ID format")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['unban'])
-def unban_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "🚫 *Admin access required!*", parse_mode="Markdown")
-        return
-    
-    try:
-        args = message.text.split()
-        if len(args) < 2:
-            bot.reply_to(message, 
-                        "⚠️ *Usage:* `/unban <user_id>`\n"
-                        "Example: `/unban 123456789`",
-                        parse_mode="Markdown")
-            return
-        
-        target_user_id = int(args[1])
-        unban_user(target_user_id)
-        
-        bot.reply_to(message, f"✅ User `{target_user_id}` has been unbanned")
-        
-        try:
-            bot.send_message(
-                target_user_id,
-                f"✅ *Account Unbanned*\n\n"
-                f"Your access to CARNAGE Swapper Bot has been restored.\n"
-                f"You can now use the bot again.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-    except ValueError:
-        bot.reply_to(message, "❌ Invalid user ID format")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['broadcast'])
 def broadcast_command(message):
@@ -948,7 +1328,11 @@ def broadcast_command(message):
                         parse_mode="Markdown")
             return
         
-        users = broadcast_message()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM users WHERE approved = 1 AND is_banned = 0")
+        users = [row[0] for row in cursor.fetchall()]
+        conn.close()
         
         if not users:
             bot.reply_to(message, "📭 No users to broadcast to")
@@ -975,377 +1359,89 @@ def broadcast_command(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "🚫 *Admin access required!*", parse_mode="Markdown")
+# ==================== MENU FUNCTIONS ====================
+def show_main_menu(chat_id):
+    if not is_user_approved(chat_id):
         return
     
-    total_users = get_total_users()
-    active_users = get_active_users_count()
+    buttons = [
+        "📱 Main Session", "🎯 Target Session",
+        "🔄 Swapper", "⚙️ Settings",
+        "📊 Dashboard", "🎁 Referral",
+        "🏆 Achievements", "📈 Stats"
+    ]
+    markup = create_reply_menu(buttons, row_width=2, add_back=False)
+    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*", parse_mode='HTML', reply_markup=markup)
+
+def show_swapper_menu(chat_id):
+    if not is_user_approved(chat_id):
+        return
     
-    stats_text = f"""
-📊 *CARNAGE Bot Statistics*
+    buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap", "Back"]
+    markup = create_reply_menu(buttons, row_width=2)
+    bot.send_message(chat_id, "<b>🔄 CARNAGE Swapper - Select Option</b>", parse_mode='HTML', reply_markup=markup)
 
-👥 *Users:*
-• Total Users: {total_users}
-• Active (24h): {active_users}
-• Pending Approval: {sum(1 for u in get_all_users() if u[3] == 0 and u[5] == 0)}
-• Banned Users: {sum(1 for u in get_all_users() if u[5] == 1)}
-
-⚙️ *Bot Performance:*
-• Total Requests: {requests_count}
-• Total Errors: {errors_count}
-• Active Sessions: {len(session_data)}
-• Cooldown Users: {len(rate_limit_cooldowns)}
-
-🕒 *Uptime:* Running
-📅 *Last Check:* {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-"""
+def show_settings_menu(chat_id):
+    if not is_user_approved(chat_id):
+        return
     
-    bot.reply_to(message, stats_text, parse_mode="Markdown")
+    buttons = ["Bio", "Name", "Back"]
+    markup = create_reply_menu(buttons, row_width=2)
+    bot.send_message(chat_id, "<b>⚙️ CARNAGE Settings - Select Option</b>", parse_mode='HTML', reply_markup=markup)
 
 # ==================== MENU HANDLERS ====================
-@bot.message_handler(func=lambda message: message.text in [
-    "Main Session", "Check Block", "Target Session", "Swapper", "Settings", "Close Bot",
-    "Run Main Swap", "BackUp Mode", "Threads Swap", "Bio", "Name", "Back", "Stop CARNAGE"
-])
-def handle_menu_navigation(message):
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
     chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.reply_to(message, "🚫 *Access restricted to approved users only.*", parse_mode='HTML')
-        return
-    
     text = message.text
     
-    if text == "Back":
-        previous_menu = session_data[chat_id]["previous_menu"]
-        if previous_menu == "main":
-            show_main_menu(chat_id)
-        elif previous_menu == "swapper":
-            show_swapper_menu(chat_id)
-        elif previous_menu == "settings":
-            show_settings_menu(chat_id)
+    # Update user activity
+    update_user_active(chat_id)
+    
+    # Check if in tutorial
+    if handle_tutorial_response(chat_id, text):
         return
     
-    if text == "Stop CARNAGE":
-        bot.send_message(chat_id, "<b>🛑 CARNAGE Stopped</b>", parse_mode='HTML')
+    # Handle menu navigation
+    if text == "Back":
+        show_main_menu(chat_id)
+        return
+    
+    if text in ["📊 Dashboard", "Dashboard"]:
+        dashboard_command(message)
+        return
+    
+    if text in ["🎁 Referral", "Referral"]:
+        referral_command(message)
+        return
+    
+    if text in ["🏆 Achievements", "Achievements"]:
+        achievements_command(message)
+        return
+    
+    if text in ["📈 Stats", "Stats"]:
+        stats_command(message)
+        return
+    
+    if text == "📱 Main Session":
+        bot.send_message(chat_id, "<b>📥 Send Main Session ID</b>", parse_mode='HTML')
+        return
+    
+    if text == "🎯 Target Session":
+        bot.send_message(chat_id, "<b>🎯 Send Target Session ID</b>", parse_mode='HTML')
+        return
+    
+    if text == "🔄 Swapper":
         show_swapper_menu(chat_id)
         return
     
-    init_session_data(chat_id)
-    
-    if session_data[chat_id]["current_menu"] == "main":
-        if text == "Main Session":
-            session_data[chat_id]["current_menu"] = "main_session_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>📥 Send Main Session ID</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, save_main_session)
-        elif text == "Check Block":
-            session_data[chat_id]["current_menu"] = "check_block_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>🔒 Do You Want To Check Block (Y/N):</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, process_check_block)
-        elif text == "Target Session":
-            session_data[chat_id]["current_menu"] = "target_session_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>🎯 Send Target Session ID</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, save_target_session)
-        elif text == "Swapper":
-            show_swapper_menu(chat_id)
-        elif text == "Settings":
-            show_settings_menu(chat_id)
-        elif text == "Close Bot":
-            clear_session_data(chat_id, "close")
-            bot.send_message(chat_id, "<b>🔄 Main and Target Sessions Reset</b>", parse_mode='HTML')
-            show_main_menu(chat_id)
-    
-    elif session_data[chat_id]["current_menu"] == "swapper":
-        if text == "Run Main Swap":
-            run_main_swap(chat_id)
-        elif text == "BackUp Mode":
-            session_data[chat_id]["current_menu"] = "backup_session_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>💾 Send Backup Session ID</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, save_backup_session)
-        elif text == "Threads Swap":
-            session_data[chat_id]["current_menu"] = "threads_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>🔢 Send Number of Threads (Recommended: 30+)</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, save_swapper_threads)
-    
-    elif session_data[chat_id]["current_menu"] == "settings":
-        if text == "Bio":
-            session_data[chat_id]["current_menu"] = "bio_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>📝 Send Bio Text</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, save_bio)
-        elif text == "Name":
-            session_data[chat_id]["current_menu"] = "name_input"
-            markup = create_reply_menu([], add_back=True)
-            bot.send_message(chat_id, "<b>👤 Send Profile Name</b>", parse_mode='HTML', reply_markup=markup)
-            bot.register_next_step_handler_by_chat_id(chat_id, save_name)
-
-def save_main_session(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
+    if text == "⚙️ Settings":
+        show_settings_menu(chat_id)
         return
     
-    init_session_data(chat_id)
-    session_id = message.text.strip()
-    username = validate_session(session_id, chat_id, "main")
-    if username:
-        session_data[chat_id]["main"] = session_id
-        session_data[chat_id]["main_username"] = f"@{username}"
-        session_data[chat_id]["main_validated_at"] = time.time()
-        bot.send_message(chat_id, f"<b>✅ Main Session Logged: @{username}</b>", parse_mode='HTML')
-    session_data[chat_id]["current_menu"] = "main"
-    show_main_menu(chat_id)
-
-def process_check_block(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    response = message.text.strip().lower()
-    if response == 'y':
-        bot.send_message(chat_id, "<b>✅ Your Account Is Swappable!</b>", parse_mode='HTML')
-    elif response == 'n':
-        bot.send_message(chat_id, "<b>❌ Your Account Doesn't Swappable!</b>", parse_mode='HTML')
-    else:
-        bot.send_message(chat_id, "<b>⚠️ Please send 'Y' or 'N'</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, process_check_block)
-        return
-    session_data[chat_id]["current_menu"] = "main"
-    show_main_menu(chat_id)
-
-def save_target_session(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    session_id = message.text.strip()
-    username = validate_session(session_id, chat_id, "target")
-    if username:
-        session_data[chat_id]["target"] = session_id
-        session_data[chat_id]["target_username"] = f"@{username}"
-        session_data[chat_id]["target_validated_at"] = time.time()
-        bot.send_message(chat_id, f"<b>✅ Target Session Logged: @{username}</b>", parse_mode='HTML')
-    session_data[chat_id]["current_menu"] = "main"
-    show_main_menu(chat_id)
-
-def save_backup_session(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    session_id = message.text.strip()
-    username = validate_session(session_id, chat_id, "backup")
-    if username:
-        session_data[chat_id]["backup"] = session_id
-        session_data[chat_id]["backup_username"] = f"@{username}"
-        bot.send_message(chat_id, f"<b>✅ Backup Session Logged: @{username}</b>", parse_mode='HTML')
-    session_data[chat_id]["current_menu"] = "swapper"
-    show_swapper_menu(chat_id)
-
-def save_swapper_threads(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    try:
-        threads = int(message.text)
-        if threads >= 1:
-            session_data[chat_id]["swapper_threads"] = threads
-            bot.send_message(chat_id, f"<b>✅ Threads Saved: {threads}</b>", parse_mode='HTML')
-        else:
-            bot.send_message(chat_id, "<b>⚠️ Enter a number greater than or equal to 1</b>", parse_mode='HTML')
-            bot.register_next_step_handler_by_chat_id(chat_id, save_swapper_threads)
-            return
-    except ValueError:
-        bot.send_message(chat_id, "<b>⚠️ Enter a valid number</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_swapper_threads)
-        return
-    session_data[chat_id]["current_menu"] = "swapper"
-    show_swapper_menu(chat_id)
-
-def save_bio(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    bio = message.text.strip()
-    session_data[chat_id]["bio"] = bio
-    bot.send_message(chat_id, "<b>✅ Bio Set</b>", parse_mode='HTML')
-    session_data[chat_id]["current_menu"] = "settings"
-    show_settings_menu(chat_id)
-
-def save_name(message):
-    chat_id = message.chat.id
-    update_user_active(chat_id)
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    name = message.text.strip()
-    session_data[chat_id]["name"] = name
-    bot.send_message(chat_id, "<b>✅ Name Saved</b>", parse_mode='HTML')
-    session_data[chat_id]["current_menu"] = "settings"
-    show_settings_menu(chat_id)
-
-def run_main_swap(chat_id):
-    global requests_count, errors_count
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "<b>🚫 Access restricted to approved users only.</b>", parse_mode='HTML')
-        return
-    
-    init_session_data(chat_id)
-    
-    if not session_data[chat_id]["main"] or not session_data[chat_id]["target"]:
-        bot.send_message(
-            chat_id, "<b>❌ Set Main and Target Sessions first.</b>", parse_mode='HTML',
-            reply_markup=create_reply_menu([], add_back=True)
-        )
-        session_data[chat_id]["current_menu"] = "swapper"
-        return
-    
-    main_valid = session_data[chat_id]["main_username"].lstrip('@') if session_data[chat_id]["main_validated_at"] and time.time() - session_data[chat_id]["main_validated_at"] < 3600 else validate_session(session_data[chat_id]["main"], chat_id, "main")
-    target_valid = session_data[chat_id]["target_username"].lstrip('@') if session_data[chat_id]["target_validated_at"] and time.time() - session_data[chat_id]["target_validated_at"] < 3600 else validate_session(session_data[chat_id]["target"], chat_id, "target")
-    
-    if not main_valid or not target_valid:
-        bot.send_message(
-            chat_id, "<b>❌ Invalid Main or Target Session.</b>", parse_mode='HTML',
-            reply_markup=create_reply_menu([], add_back=True)
-        )
-        session_data[chat_id]["current_menu"] = "swapper"
-        return
-    
-    try:
-        progress_message = bot.send_message(chat_id, "<b>🔄 Starting CARNAGE swap...</b>", parse_mode='HTML')
-        message_id = progress_message.message_id
-
-        animation_frames = [
-            "<b>🔄 Swapping username... █</b>",
-            "<b>🔄 Swapping username... ██</b>",
-            "<b>🔄 Swapping username... ███</b>",
-            "<b>🔄 Swapping username... ████</b>"
-        ]
-        
-        csrf_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-        target_session = session_data[chat_id]["target"]
-        target_username = session_data[chat_id]["target_username"]
-        random_username = generate_random_username()
-
-        # Step 1: Change target to random username
-        bot.edit_message_text(
-            "<b>🔄 Changing target to random username...</b>", chat_id, message_id, parse_mode='HTML'
-        )
-        for i in range(4):
-            bot.edit_message_text(animation_frames[i], chat_id, message_id, parse_mode='HTML')
-            time.sleep(0.5)
-        time.sleep(2)
-        
-        random_username_full = change_username_account1(chat_id, target_session, csrf_token, random_username)
-        if not random_username_full:
-            bot.edit_message_text(
-                f"<b>❌ Failed to update target {target_username}.</b>", chat_id, message_id, parse_mode='HTML'
-            )
-            clear_session_data(chat_id, "main")
-            clear_session_data(chat_id, "target")
-            
-            # Send failure notification to admin
-            user_info = f"👤 User ID: `{chat_id}`\n🎯 Target: {target_username}"
-            send_admin_notification(target_username, "Failed", user_info)
-            
-            show_swapper_menu(chat_id)
-            return
-
-        # Step 2: Change main to target username
-        bot.edit_message_text(
-            f"<b>🔄 Setting main to {target_username}...</b>", chat_id, message_id, parse_mode='HTML'
-        )
-        for i in range(4):
-            bot.edit_message_text(animation_frames[i], chat_id, message_id, parse_mode='HTML')
-            time.sleep(0.5)
-        time.sleep(2)
-        
-        success = change_username_account2(chat_id, session_data[chat_id]["main"], csrf_token, target_username)
-        if success:
-            bot.edit_message_text(
-                f"<b>✅ CARNAGE Swap Success!\n🎯 {target_username}\n📍 Username swapped successfully!</b>", chat_id, message_id, parse_mode='HTML'
-            )
-            release_time = datetime.now().strftime("%I:%M:%S %p")
-            bot.send_message(
-                chat_id, f"<b>🕒 {target_username} Released [{release_time}]</b>", parse_mode='HTML'
-            )
-            
-            # Send success notification to admin
-            user_info = f"👤 User ID: `{chat_id}`\n🎯 Target: {target_username}\n🕒 Time: {release_time}"
-            send_admin_notification(target_username, "Swapped", user_info)
-            
-            # Optional: Send to channel
-            send_channel_notification(target_username, "Swapped")
-        else:
-            bot.edit_message_text(
-                f"<b>❌ Swap failed for {target_username}.</b>", chat_id, message_id, parse_mode='HTML'
-            )
-            
-            # Send failure notification to admin
-            user_info = f"👤 User ID: `{chat_id}`\n🎯 Target: {target_username}"
-            send_admin_notification(target_username, "Failed", user_info)
-            
-            if revert_username(chat_id, target_session, csrf_token, target_username):
-                bot.send_message(
-                    chat_id, f"<b>✅ Successfully reverted to {target_username}.</b>", parse_mode='HTML'
-                )
-            else:
-                bot.send_message(
-                    chat_id, f"<b>⚠️ Warning: Could not revert to {target_username}.</b>", parse_mode='HTML'
-                )
-        
-        clear_session_data(chat_id, "main")
-        clear_session_data(chat_id, "target")
-        
-    except Exception as e:
-        bot.edit_message_text(
-            f"<b>❌ Error during swap: {str(e)}</b>", chat_id, message_id, parse_mode='HTML'
-        )
-        
-        # Send error notification to admin
-        error_info = f"👤 User ID: `{chat_id}`\n🎯 Target: {target_username}\n❌ Error: {str(e)}"
-        send_admin_notification(target_username, "Failed", error_info)
-    
-    show_swapper_menu(chat_id)
+    # Default response
+    if text not in ["/start", "/help", "/tutorial"]:
+        bot.send_message(chat_id, "Use /help to see available commands or /tutorial for guided tour!")
 
 # ==================== TELEGRAM BOT POLLING THREAD ====================
 def run_telegram_bot():
@@ -1362,9 +1458,11 @@ def run_telegram_bot():
 # ==================== MAIN STARTUP ====================
 def main():
     """Start everything"""
-    print("🚀 CARNAGE Swapper Bot with Admin System")
+    print("🚀 CARNAGE Swapper Bot v3.0 with Advanced Features")
     print(f"👑 Admin ID: {ADMIN_USER_ID}")
+    print(f"🤖 Bot Username: @{BOT_USERNAME}")
     print("📊 Database initialized")
+    print("✨ Features: Dashboard, Referral, Tutorial, Achievements, Analytics")
     
     # Start Telegram bot in background thread
     bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
@@ -1372,10 +1470,11 @@ def main():
     print("🤖 Telegram bot started in background")
     
     # Get port from environment (Koyeb provides PORT)
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 8000))
     
     # Start Flask app (main thread)
     print(f"🌐 Starting Flask server on port {port}")
+    print(f"📊 Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app")
     app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
