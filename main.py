@@ -17,6 +17,7 @@ from telebot.types import (
     InputTextMessageContent
 )
 from flask import Flask, jsonify, render_template_string
+import atexit
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8271097949:AAGgugeFfdJa6NtrsrrIrIfqxcZeQ1xenA8')
@@ -34,14 +35,56 @@ rate_limit_cooldowns = {}
 tutorial_sessions = {}
 referral_cache = {}
 
+# Database connection pool
+db_lock = threading.Lock()
+
 # ==================== FLASK APP FOR KOYEB ====================
 app = Flask(__name__)
 
-# ==================== BASIC HELPER FUNCTIONS ====================
+# ==================== DATABASE CONNECTION MANAGEMENT ====================
 def get_db_connection():
-    """Get database connection"""
-    return sqlite3.connect('users.db')
+    """Get database connection with thread safety"""
+    conn = sqlite3.connect('users.db', check_same_thread=False, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
 
+def execute_query(query, params=(), commit=False):
+    """Execute SQL query with thread safety"""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query, params)
+            if commit:
+                conn.commit()
+                result = True
+            else:
+                result = cursor.fetchall()
+            return result
+        except Exception as e:
+            print(f"Database error: {e}")
+            if commit:
+                conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+def execute_one(query, params=()):
+    """Execute SQL query and return single result"""
+    with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query, params)
+            result = cursor.fetchone()
+            return result
+        except Exception as e:
+            print(f"Database error: {e}")
+            return None
+        finally:
+            conn.close()
+
+# ==================== BASIC HELPER FUNCTIONS ====================
 def is_admin(user_id):
     """Check if user is admin"""
     return user_id == ADMIN_USER_ID
@@ -69,53 +112,41 @@ def create_reply_menu(buttons, row_width=2, add_back=True):
 # ==================== DATABASE FUNCTIONS ====================
 def add_user(user_id, username, first_name, last_name, referral_code="direct"):
     """Add new user to database with referral support"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    # Check if user already exists
+    existing_user = execute_one("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if existing_user:
+        return
     
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    if not cursor.fetchone():
-        user_referral_code = generate_referral_code(user_id)
-        cursor.execute('''
-            INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, referral_code, join_method)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, username, first_name, last_name, 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-              user_referral_code, 'direct'))
-        conn.commit()
-        
-        # Process referral if any
-        if referral_code and referral_code != "direct":
-            process_referral(user_id, referral_code)
-        
-        # Award early adopter achievement for first 100 users
-        if get_total_users() <= 100:
-            award_achievement(user_id, "early_adopter")
-        if get_total_users() <= 50:
-            award_achievement(user_id, "first_user")
+    user_referral_code = generate_referral_code(user_id)
+    execute_query('''
+        INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, referral_code, join_method)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, username, first_name, last_name, 
+          datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+          user_referral_code, 'direct'), commit=True)
     
-    conn.close()
+    # Process referral if any
+    if referral_code and referral_code != "direct":
+        process_referral(user_id, referral_code)
+    
+    # Award early adopter achievement for first 100 users
+    if get_total_users() <= 100:
+        award_achievement(user_id, "early_adopter")
+    if get_total_users() <= 50:
+        award_achievement(user_id, "first_user")
 
 def update_user_active(user_id):
     """Update user's last active time"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET last_active = ? WHERE user_id = ?", 
-                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
-    conn.commit()
-    conn.close()
+    execute_query("UPDATE users SET last_active = ? WHERE user_id = ?", 
+                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id), commit=True)
 
 def get_user_status(user_id):
     """Get user approval status"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT approved, approved_until, is_banned FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
+    result = execute_one("SELECT approved, approved_until, is_banned FROM users WHERE user_id = ?", (user_id,))
     
     if result:
         approved = result[0]
-        approved_until = result[1]
         is_banned = result[2]
         
         if is_banned:
@@ -133,9 +164,6 @@ def is_user_approved(user_id):
 
 def approve_user(user_id, duration_days=None):
     """Approve user access"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
     if duration_days:
         if duration_days == "permanent":
             approved_until = "9999-12-31 23:59:59"
@@ -144,70 +172,45 @@ def approve_user(user_id, duration_days=None):
     else:
         approved_until = "9999-12-31 23:59:59"
     
-    cursor.execute("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
-                   (approved_until, user_id))
-    conn.commit()
-    conn.close()
+    execute_query("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
+                  (approved_until, user_id), commit=True)
 
 def ban_user(user_id, reason="No reason provided"):
     """Ban a user"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", 
-                   (reason, user_id))
-    conn.commit()
-    conn.close()
+    execute_query("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", 
+                  (reason, user_id), commit=True)
 
 def get_all_users():
     """Get all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, first_name, approved, approved_until, is_banned, total_referrals FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    return users
+    return execute_query("SELECT user_id, username, first_name, approved, approved_until, is_banned, total_referrals FROM users")
 
 def get_total_users():
     """Get total user count"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users")
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    result = execute_one("SELECT COUNT(*) FROM users")
+    return result[0] if result else 0
 
 def get_active_users_count():
     """Get count of users active in last 24 hours"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("SELECT COUNT(*) FROM users WHERE last_active > ?", (yesterday,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    result = execute_one("SELECT COUNT(*) FROM users WHERE last_active > ?", (yesterday,))
+    return result[0] if result else 0
 
 def log_swap(user_id, target_username, status, error_message=None):
     """Log swap attempt to history"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
+    execute_query('''
         INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message)
         VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message))
+    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message), commit=True)
     
     # Update user stats
-    cursor.execute("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,))
+    execute_query("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,), commit=True)
     if status == "success":
-        cursor.execute("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,))
-    
-    conn.commit()
-    conn.close()
+        execute_query("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,), commit=True)
     
     # Award first swap achievement
     if status == "success":
-        cursor.execute("SELECT COUNT(*) FROM swap_history WHERE user_id = ? AND status = 'success'", (user_id,))
-        success_count = cursor.fetchone()[0]
+        result = execute_one("SELECT COUNT(*) FROM swap_history WHERE user_id = ? AND status = 'success'", (user_id,))
+        success_count = result[0] if result else 0
         if success_count == 1:
             award_achievement(user_id, "first_swap")
         if success_count >= 10:
@@ -215,27 +218,18 @@ def log_swap(user_id, target_username, status, error_message=None):
 
 def get_total_swaps():
     """Get total swaps across all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(total_swaps) FROM users")
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result[0] else 0
+    result = execute_one("SELECT SUM(total_swaps) FROM users")
+    return result[0] if result and result[0] else 0
 
 def get_user_detailed_stats(user_id):
     """Get detailed user statistics for dashboard"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
     # Get basic user info
-    cursor.execute('''
+    user_data = execute_one('''
         SELECT username, total_swaps, successful_swaps, total_referrals, free_swaps_earned
         FROM users WHERE user_id = ?
     ''', (user_id,))
-    user_data = cursor.fetchone()
     
     if not user_data:
-        conn.close()
         return None
     
     username, total_swaps, successful_swaps, total_referrals, free_swaps = user_data
@@ -244,16 +238,13 @@ def get_user_detailed_stats(user_id):
     success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
     
     # Get recent swaps
-    cursor.execute('''
+    recent_swaps = execute_query('''
         SELECT target_username, status, swap_time 
         FROM swap_history 
         WHERE user_id = ? 
         ORDER BY swap_time DESC 
         LIMIT 5
     ''', (user_id,))
-    recent_swaps = cursor.fetchall()
-    
-    conn.close()
     
     # Get achievements
     achievements = get_user_achievements(user_id)
@@ -287,32 +278,26 @@ def process_referral(user_id, referral_code):
         return
     
     # Find referrer by code
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE referral_code = ?", (referral_code,))
-    result = cursor.fetchone()
+    result = execute_one("SELECT user_id FROM users WHERE referral_code = ?", (referral_code,))
     
     if result:
         referrer_id = result[0]
         
         # Update referred user
-        cursor.execute("UPDATE users SET referred_by = ?, join_method = 'referral' WHERE user_id = ?", 
-                      (referrer_id, user_id))
+        execute_query("UPDATE users SET referred_by = ?, join_method = 'referral' WHERE user_id = ?", 
+                     (referrer_id, user_id), commit=True)
         
         # Update referrer stats
-        cursor.execute('''
+        execute_query('''
             UPDATE users 
             SET total_referrals = total_referrals + 1,
                 free_swaps_earned = free_swaps_earned + 2
             WHERE user_id = ?
-        ''', (referrer_id,))
-        
-        conn.commit()
+        ''', (referrer_id,), commit=True)
         
         # Award free swaps to new user (no approval needed)
-        cursor.execute("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
-                      (user_id,))
-        conn.commit()
+        execute_query("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
+                     (user_id,), commit=True)
         
         # Notify referrer
         try:
@@ -334,35 +319,21 @@ def process_referral(user_id, referral_code):
         # Check if reached 5 referrals for special achievement
         if get_user_referrals_count(referrer_id) >= 5:
             award_achievement(referrer_id, "referral_master")
-    
-    conn.close()
 
 def get_user_referrals_count(user_id):
     """Get count of user's referrals"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    result = execute_one("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,))
+    return result[0] if result else 0
 
 def get_user_free_swaps(user_id):
     """Get user's free swaps count"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT free_swaps_earned FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
+    result = execute_one("SELECT free_swaps_earned FROM users WHERE user_id = ?", (user_id,))
     return result[0] if result else 0
 
 def get_total_referrals():
     """Get total referrals across all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(total_referrals) FROM users")
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result[0] else 0
+    result = execute_one("SELECT SUM(total_referrals) FROM users")
+    return result[0] if result and result[0] else 0
 
 # ==================== ACHIEVEMENT SYSTEM ====================
 ACHIEVEMENTS = {
@@ -379,26 +350,19 @@ ACHIEVEMENTS = {
 
 def award_achievement(user_id, achievement_id):
     """Award an achievement to user"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
     # Check if already awarded
-    cursor.execute("SELECT * FROM achievements WHERE user_id = ? AND achievement_id = ?", 
-                   (user_id, achievement_id))
-    if cursor.fetchone():
-        conn.close()
+    result = execute_one("SELECT * FROM achievements WHERE user_id = ? AND achievement_id = ?", 
+                        (user_id, achievement_id))
+    if result:
         return False
     
     achievement = ACHIEVEMENTS.get(achievement_id)
     if achievement:
-        cursor.execute('''
+        execute_query('''
             INSERT INTO achievements (user_id, achievement_id, achievement_name, achievement_emoji, unlocked_at)
             VALUES (?, ?, ?, ?, ?)
         ''', (user_id, achievement_id, achievement['name'], achievement['emoji'], 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        
-        conn.commit()
-        conn.close()
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S")), commit=True)
         
         # Notify user
         try:
@@ -415,21 +379,14 @@ def award_achievement(user_id, achievement_id):
         
         return True
     
-    conn.close()
     return False
 
 def get_user_achievements(user_id):
     """Get user's unlocked achievements"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
+    achievements = execute_query('''
         SELECT achievement_id, achievement_name, achievement_emoji, unlocked_at 
         FROM achievements WHERE user_id = ? ORDER BY unlocked_at DESC
     ''', (user_id,))
-    
-    achievements = cursor.fetchall()
-    conn.close()
     
     unlocked = len(achievements)
     total = len(ACHIEVEMENTS)
@@ -442,87 +399,92 @@ def get_user_achievements(user_id):
 
 def get_total_achievements_awarded():
     """Get total achievements awarded"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM achievements")
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    result = execute_one("SELECT COUNT(*) FROM achievements")
+    return result[0] if result else 0
 
 # ==================== DATABASE SETUP ====================
 def init_database():
-    """Initialize SQLite database with new tables"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            approved INTEGER DEFAULT 0,
-            approved_until TEXT DEFAULT NULL,
-            join_date TEXT,
-            last_active TEXT,
-            is_banned INTEGER DEFAULT 0,
-            ban_reason TEXT DEFAULT NULL,
-            is_admin INTEGER DEFAULT 0,
-            referral_code TEXT UNIQUE,
-            referred_by INTEGER DEFAULT NULL,
-            total_referrals INTEGER DEFAULT 0,
-            free_swaps_earned INTEGER DEFAULT 0,
-            total_swaps INTEGER DEFAULT 0,
-            successful_swaps INTEGER DEFAULT 0,
-            join_method TEXT DEFAULT 'direct'
-        )
-    ''')
-    
-    # Achievements table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS achievements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            achievement_id TEXT,
-            achievement_name TEXT,
-            achievement_emoji TEXT,
-            unlocked_at TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    # Swap history table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS swap_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            target_username TEXT,
-            status TEXT,
-            swap_time TEXT,
-            error_message TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    # Insert admin if not exists
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
-    if not cursor.fetchone():
-        referral_code = generate_referral_code(ADMIN_USER_ID)
-        cursor.execute('''
-            INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, 
-                              join_date, last_active, is_banned, is_admin, referral_code, join_method)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (ADMIN_USER_ID, "admin", "Admin", "User", 1, "9999-12-31 23:59:59", 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct'))
-        
-        # Award admin achievements
-        award_achievement(ADMIN_USER_ID, "founder")
-        award_achievement(ADMIN_USER_ID, "first_user")
-    
-    conn.commit()
-    conn.close()
+    """Initialize SQLite database with new tables - SIMPLE VERSION"""
+    try:
+        with db_lock:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    approved INTEGER DEFAULT 0,
+                    approved_until TEXT DEFAULT NULL,
+                    join_date TEXT,
+                    last_active TEXT,
+                    is_banned INTEGER DEFAULT 0,
+                    ban_reason TEXT DEFAULT NULL,
+                    is_admin INTEGER DEFAULT 0,
+                    referral_code TEXT UNIQUE,
+                    referred_by INTEGER DEFAULT NULL,
+                    total_referrals INTEGER DEFAULT 0,
+                    free_swaps_earned INTEGER DEFAULT 0,
+                    total_swaps INTEGER DEFAULT 0,
+                    successful_swaps INTEGER DEFAULT 0,
+                    join_method TEXT DEFAULT 'direct'
+                )
+            ''')
+            
+            # Achievements table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS achievements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    achievement_id TEXT,
+                    achievement_name TEXT,
+                    achievement_emoji TEXT,
+                    unlocked_at TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Swap history table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS swap_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    target_username TEXT,
+                    status TEXT,
+                    swap_time TEXT,
+                    error_message TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Check if admin exists
+            cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
+            if not cursor.fetchone():
+                referral_code = generate_referral_code(ADMIN_USER_ID)
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, 
+                                      join_date, last_active, is_banned, is_admin, referral_code, join_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (ADMIN_USER_ID, "admin", "Admin", "User", 1, "9999-12-31 23:59:59", 
+                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct'))
+            
+            conn.commit()
+            conn.close()
+            
+            # Award achievements AFTER database is created
+            time.sleep(0.5)  # Small delay
+            award_achievement(ADMIN_USER_ID, "founder")
+            award_achievement(ADMIN_USER_ID, "first_user")
+            
+            print("✅ Database initialized successfully")
+            
+    except Exception as e:
+        print(f"❌ Database initialization error: {e}")
+        # Try to continue anyway
 
 # ==================== TUTORIAL SYSTEM ====================
 TUTORIAL_STEPS = [
@@ -1009,30 +971,23 @@ def stats_command(message):
 @bot.message_handler(commands=['leaderboard'])
 def leaderboard_command(message):
     """Show leaderboard"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
     # Top by successful swaps
-    cursor.execute('''
+    top_swappers = execute_query('''
         SELECT username, successful_swaps, total_referrals 
         FROM users 
         WHERE username IS NOT NULL 
         ORDER BY successful_swaps DESC 
         LIMIT 10
     ''')
-    top_swappers = cursor.fetchall()
     
     # Top by referrals
-    cursor.execute('''
+    top_referrers = execute_query('''
         SELECT username, total_referrals, successful_swaps
         FROM users 
         WHERE username IS NOT NULL 
         ORDER BY total_referrals DESC 
         LIMIT 10
     ''')
-    top_referrers = cursor.fetchall()
-    
-    conn.close()
     
     response = """
 🏆 *CARNAGE Leaderboard*
@@ -1056,19 +1011,13 @@ def leaderboard_command(message):
 def history_command(message):
     """Show user's swap history"""
     user_id = message.from_user.id
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
+    history = execute_query('''
         SELECT target_username, status, swap_time 
         FROM swap_history 
         WHERE user_id = ? 
         ORDER BY swap_time DESC 
         LIMIT 10
     ''', (user_id,))
-    
-    history = cursor.fetchall()
-    conn.close()
     
     if not history:
         bot.send_message(user_id, "No swap history yet. Start swapping! 🔄")
@@ -1322,24 +1271,21 @@ def broadcast_command(message):
                         parse_mode="Markdown")
             return
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM users WHERE approved = 1 AND is_banned = 0")
-        users = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        users = execute_query("SELECT user_id FROM users WHERE approved = 1 AND is_banned = 0")
+        user_ids = [row[0] for row in users]
         
-        if not users:
+        if not user_ids:
             bot.reply_to(message, "📭 No users to broadcast to")
             return
         
-        bot.reply_to(message, f"📢 Broadcasting to {len(users)} users...")
+        bot.reply_to(message, f"📢 Broadcasting to {len(user_ids)} users...")
         
         success_count = 0
         fail_count = 0
         
-        for user in users:
+        for user_id in user_ids:
             try:
-                bot.send_message(user, broadcast_text)
+                bot.send_message(user_id, broadcast_text)
                 success_count += 1
                 time.sleep(0.1)
             except:
@@ -1423,12 +1369,13 @@ def run_telegram_bot():
 def main():
     """Start everything"""
     # Initialize database first
+    print("🔧 Initializing database...")
     init_database()
     
+    print("✅ Database initialized successfully")
     print("🚀 CARNAGE Swapper Bot v3.0 with Advanced Features")
     print(f"👑 Admin ID: {ADMIN_USER_ID}")
     print(f"🤖 Bot Username: @{BOT_USERNAME}")
-    print("📊 Database initialized")
     print("✨ Features: Dashboard, Referral, Tutorial, Achievements, Analytics")
     
     # Start Telegram bot in background thread
@@ -1442,7 +1389,7 @@ def main():
     # Start Flask app (main thread)
     print(f"🌐 Starting Flask server on port {port}")
     print(f"📊 Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
     main()
