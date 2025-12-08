@@ -140,6 +140,21 @@ def add_user(user_id, username, first_name, last_name):
     
     conn.close()
 
+import threading
+
+def keep_alive_loop():
+    """Internal loop to keep bot awake"""
+    while True:
+        try:
+            # Make request to self
+            requests.get("https://separate-genny-1carnage1-2b4c603c.koyeb.app/ping1", timeout=10)
+        except:
+            pass
+        time.sleep(300)  # 5 minutes
+
+# Start in background thread
+threading.Thread(target=keep_alive_loop, daemon=True).start()
+
 def update_user_active(user_id):
     """Update user's last active time"""
     conn = get_db_connection()
