@@ -25,7 +25,19 @@ def health_check():
         "uptime": time.time() - start_time,
         "endpoints": ["/", "/health", "/stats", "/users"]
     })
+# Add these routes to your bot.py
+@app.route('/ping1')
+def ping1():
+    return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
 
+@app.route('/ping2')
+def ping2():
+    return jsonify({"status": "pong2", "time": datetime.now().isoformat()})
+
+@app.route('/ping3')
+def ping3():
+    return jsonify({"status": "pong3", "time": datetime.now().isoformat()})
+    
 @app.route('/health')
 def health():
     """Health check endpoint"""
