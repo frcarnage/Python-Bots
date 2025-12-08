@@ -18,124 +18,6 @@ from telebot.types import (
 )
 from flask import Flask, jsonify, render_template_string
 
-# ==================== FLASK APP FOR KOYEB ====================
-app = Flask(__name__)
-
-# Required HTTP routes for Koyeb health checks
-@app.route('/')
-def health_check():
-    """Required route for Koyeb to keep service alive"""
-    return jsonify({
-        "status": "online",
-        "service": "CARNAGE Telegram Bot",
-        "timestamp": datetime.now().isoformat(),
-        "version": "3.0.0",
-        "features": ["dashboard", "referral", "tutorial", "achievements", "analytics"]
-    })
-
-# Add these routes to your bot.py
-@app.route('/ping1')
-def ping1():
-    return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
-
-@app.route('/ping2')
-def ping2():
-    return jsonify({"status": "pong2", "time": datetime.now().isoformat()})
-
-@app.route('/ping3')
-def ping3():
-    return jsonify({"status": "pong3", "time": datetime.now().isoformat()})
-
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-
-@app.route('/stats')
-def web_stats():
-    """Web stats endpoint"""
-    return jsonify({
-        "total_users": get_total_users(),
-        "total_referrals": get_total_referrals(),
-        "total_swaps": get_total_swaps(),
-        "total_achievements": get_total_achievements_awarded()
-    })
-
-@app.route('/dashboard/<int:user_id>')
-def user_dashboard(user_id):
-    """Web dashboard for users"""
-    user_stats = get_user_detailed_stats(user_id)
-    achievements = get_user_achievements(user_id)
-    
-    html_template = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>CARNAGE Dashboard - @{{username}}</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background: #0f0f0f; color: white; }
-            .container { max-width: 800px; margin: 0 auto; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-            .card { background: #1a1a1a; padding: 20px; border-radius: 10px; margin-bottom: 15px; }
-            .stat { display: flex; justify-content: space-between; margin: 10px 0; }
-            .badge { background: #667eea; padding: 5px 10px; border-radius: 20px; font-size: 12px; }
-            .achievement { display: inline-block; background: #2a2a2a; padding: 10px; margin: 5px; border-radius: 5px; }
-            .referral-link { background: #2a2a2a; padding: 15px; border-radius: 5px; word-break: break-all; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🤖 CARNAGE Dashboard</h1>
-                <p>Welcome, @{{username}}! 👋</p>
-            </div>
-            
-            <div class="card">
-                <h2>📊 Your Statistics</h2>
-                {% for stat in stats %}
-                <div class="stat">
-                    <span>{{stat.name}}:</span>
-                    <strong>{{stat.value}}</strong>
-                </div>
-                {% endfor %}
-            </div>
-            
-            <div class="card">
-                <h2>🏆 Achievements ({{achievements.unlocked}}/{{achievements.total}})</h2>
-                {% for ach in achievements.list %}
-                <div class="achievement">
-                    {{ach.emoji}} {{ach.name}}
-                </div>
-                {% endfor %}
-            </div>
-            
-            <div class="card">
-                <h2>👥 Referral Program</h2>
-                <p>Your Referrals: <strong>{{referrals.count}}</strong></p>
-                <p>Free Swaps Earned: <strong>{{referrals.free_swaps}}</strong></p>
-                <div class="referral-link">
-                    <strong>Your Referral Link:</strong><br>
-                    https://t.me/{{bot_username}}?start=ref-{{user_id}}
-                </div>
-                <p style="font-size: 12px; color: #888; margin-top: 10px;">
-                    ⭐ Each referral gives you 2 FREE swaps! No approval needed!
-                </p>
-            </div>
-            
-            <div class="card">
-                <h2>🚀 Quick Actions</h2>
-                <p><a href="https://t.me/{{bot_username}}?start=swap" style="color: #667eea;">Start New Swap</a></p>
-                <p><a href="https://t.me/{{bot_username}}?start=tutorial" style="color: #667eea;">Interactive Tutorial</a></p>
-                <p><a href="https://t.me/{{bot_username}}" style="color: #667eea;">Open Bot in Telegram</a></p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return render_template_string(html_template, **user_stats)
-
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '8271097949:AAGgugeFfdJa6NtrsrrIrIfqxcZeQ1xenA8')
 ADMIN_USER_ID = int(os.environ.get('ADMIN_USER_ID', '7575087826'))
@@ -152,11 +34,10 @@ rate_limit_cooldowns = {}
 tutorial_sessions = {}
 referral_cache = {}
 
-# ==================== HELPER FUNCTIONS ====================
-def generate_referral_code(user_id):
-    """Generate unique referral code"""
-    return f"CARNAGE{user_id}{random.randint(1000, 9999)}"
+# ==================== FLASK APP FOR KOYEB ====================
+app = Flask(__name__)
 
+# ==================== BASIC HELPER FUNCTIONS ====================
 def get_db_connection():
     """Get database connection"""
     return sqlite3.connect('users.db')
@@ -165,10 +46,9 @@ def is_admin(user_id):
     """Check if user is admin"""
     return user_id == ADMIN_USER_ID
 
-def is_user_approved(user_id):
-    """Check if user is approved"""
-    status = get_user_status(user_id)
-    return status == "approved"
+def generate_referral_code(user_id):
+    """Generate unique referral code"""
+    return f"CARNAGE{user_id}{random.randint(1000, 9999)}"
 
 def send_to_admin(message_text, parse_mode="Markdown"):
     """Send notification to admin"""
@@ -186,36 +66,219 @@ def create_reply_menu(buttons, row_width=2, add_back=True):
         markup.add(KeyboardButton("Back"))
     return markup
 
-def send_admin_notification(username, action, user_info=""):
-    """Send swap notification to admin"""
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# ==================== DATABASE FUNCTIONS ====================
+def add_user(user_id, username, first_name, last_name, referral_code="direct"):
+    """Add new user to database with referral support"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    if action == "Swapped":
-        notification = f"""
-🔄 *CARNAGE Swap Notification*
-
-✅ *Successful Swap*
-👤 Username: `{username}`
-🕒 Time: {current_time}
-{user_info}
-
-📍 Status: Successfully swapped!
-📊 Bot: CARNAGE Swapper
-        """
-    elif action == "Failed":
-        notification = f"""
-🔄 *CARNAGE Swap Notification*
-
-❌ *Failed Swap*
-👤 Username: `{username}`
-🕒 Time: {current_time}
-{user_info}
-
-📍 Status: Swap failed!
-📊 Bot: CARNAGE Swapper
-        """
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if not cursor.fetchone():
+        user_referral_code = generate_referral_code(user_id)
+        cursor.execute('''
+            INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, referral_code, join_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, username, first_name, last_name, 
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+              user_referral_code, 'direct'))
+        conn.commit()
+        
+        # Process referral if any
+        if referral_code and referral_code != "direct":
+            process_referral(user_id, referral_code)
+        
+        # Award early adopter achievement for first 100 users
+        if get_total_users() <= 100:
+            award_achievement(user_id, "early_adopter")
+        if get_total_users() <= 50:
+            award_achievement(user_id, "first_user")
     
-    send_to_admin(notification)
+    conn.close()
+
+def update_user_active(user_id):
+    """Update user's last active time"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET last_active = ? WHERE user_id = ?", 
+                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    conn.commit()
+    conn.close()
+
+def get_user_status(user_id):
+    """Get user approval status"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT approved, approved_until, is_banned FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        approved = result[0]
+        approved_until = result[1]
+        is_banned = result[2]
+        
+        if is_banned:
+            return "banned"
+        
+        if approved == 1:
+            return "approved"
+    
+    return "pending"
+
+def is_user_approved(user_id):
+    """Check if user is approved"""
+    status = get_user_status(user_id)
+    return status == "approved"
+
+def approve_user(user_id, duration_days=None):
+    """Approve user access"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if duration_days:
+        if duration_days == "permanent":
+            approved_until = "9999-12-31 23:59:59"
+        else:
+            approved_until = (datetime.now() + timedelta(days=int(duration_days))).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        approved_until = "9999-12-31 23:59:59"
+    
+    cursor.execute("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
+                   (approved_until, user_id))
+    conn.commit()
+    conn.close()
+
+def ban_user(user_id, reason="No reason provided"):
+    """Ban a user"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", 
+                   (reason, user_id))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    """Get all users"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, first_name, approved, approved_until, is_banned, total_referrals FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    return users
+
+def get_total_users():
+    """Get total user count"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def get_active_users_count():
+    """Get count of users active in last 24 hours"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("SELECT COUNT(*) FROM users WHERE last_active > ?", (yesterday,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def log_swap(user_id, target_username, status, error_message=None):
+    """Log swap attempt to history"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message))
+    
+    # Update user stats
+    cursor.execute("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,))
+    if status == "success":
+        cursor.execute("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    # Award first swap achievement
+    if status == "success":
+        cursor.execute("SELECT COUNT(*) FROM swap_history WHERE user_id = ? AND status = 'success'", (user_id,))
+        success_count = cursor.fetchone()[0]
+        if success_count == 1:
+            award_achievement(user_id, "first_swap")
+        if success_count >= 10:
+            award_achievement(user_id, "swap_pro")
+
+def get_total_swaps():
+    """Get total swaps across all users"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(total_swaps) FROM users")
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result[0] else 0
+
+def get_user_detailed_stats(user_id):
+    """Get detailed user statistics for dashboard"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Get basic user info
+    cursor.execute('''
+        SELECT username, total_swaps, successful_swaps, total_referrals, free_swaps_earned
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
+    user_data = cursor.fetchone()
+    
+    if not user_data:
+        conn.close()
+        return None
+    
+    username, total_swaps, successful_swaps, total_referrals, free_swaps = user_data
+    
+    # Calculate success rate
+    success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
+    
+    # Get recent swaps
+    cursor.execute('''
+        SELECT target_username, status, swap_time 
+        FROM swap_history 
+        WHERE user_id = ? 
+        ORDER BY swap_time DESC 
+        LIMIT 5
+    ''', (user_id,))
+    recent_swaps = cursor.fetchall()
+    
+    conn.close()
+    
+    # Get achievements
+    achievements = get_user_achievements(user_id)
+    
+    return {
+        "username": username or "User",
+        "bot_username": BOT_USERNAME,
+        "user_id": user_id,
+        "stats": [
+            {"name": "Total Swaps", "value": total_swaps},
+            {"name": "Successful Swaps", "value": successful_swaps},
+            {"name": "Success Rate", "value": f"{success_rate:.1f}%"},
+            {"name": "Total Referrals", "value": total_referrals},
+            {"name": "Free Swaps Available", "value": free_swaps},
+            {"name": "Account Status", "value": "✅ Approved" if get_user_status(user_id) == "approved" else "⏳ Pending"}
+        ],
+        "achievements": achievements,
+        "referrals": {
+            "count": total_referrals,
+            "free_swaps": free_swaps
+        },
+        "recent_swaps": [
+            {"target": s[0], "status": s[1], "time": s[2]} for s in recent_swaps
+        ]
+    }
 
 # ==================== REFERRAL SYSTEM ====================
 def process_referral(user_id, referral_code):
@@ -300,84 +363,6 @@ def get_total_referrals():
     result = cursor.fetchone()
     conn.close()
     return result[0] if result[0] else 0
-
-# ==================== DATABASE SETUP ====================
-def init_database():
-    """Initialize SQLite database with new tables"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            approved INTEGER DEFAULT 0,
-            approved_until TEXT DEFAULT NULL,
-            join_date TEXT,
-            last_active TEXT,
-            is_banned INTEGER DEFAULT 0,
-            ban_reason TEXT DEFAULT NULL,
-            is_admin INTEGER DEFAULT 0,
-            referral_code TEXT UNIQUE,
-            referred_by INTEGER DEFAULT NULL,
-            total_referrals INTEGER DEFAULT 0,
-            free_swaps_earned INTEGER DEFAULT 0,
-            total_swaps INTEGER DEFAULT 0,
-            successful_swaps INTEGER DEFAULT 0,
-            join_method TEXT DEFAULT 'direct'
-        )
-    ''')
-    
-    # Achievements table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS achievements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            achievement_id TEXT,
-            achievement_name TEXT,
-            achievement_emoji TEXT,
-            unlocked_at TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    # Swap history table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS swap_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            target_username TEXT,
-            status TEXT,
-            swap_time TEXT,
-            error_message TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    # Insert admin if not exists
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
-    if not cursor.fetchone():
-        referral_code = generate_referral_code(ADMIN_USER_ID)
-        cursor.execute('''
-            INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, 
-                              join_date, last_active, is_banned, is_admin, referral_code, join_method)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (ADMIN_USER_ID, "admin", "Admin", "User", 1, "9999-12-31 23:59:59", 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct'))
-        
-        # Award admin achievements
-        award_achievement(ADMIN_USER_ID, "founder")
-        award_achievement(ADMIN_USER_ID, "first_user")
-    
-    conn.commit()
-    conn.close()
-
-# Initialize database at startup
-init_database()
 
 # ==================== ACHIEVEMENT SYSTEM ====================
 ACHIEVEMENTS = {
@@ -464,227 +449,80 @@ def get_total_achievements_awarded():
     conn.close()
     return count
 
-# ==================== DATABASE FUNCTIONS ====================
-def add_user(user_id, username, first_name, last_name, referral_code="direct"):
-    """Add new user to database with referral support"""
+# ==================== DATABASE SETUP ====================
+def init_database():
+    """Initialize SQLite database with new tables"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    # Users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            approved INTEGER DEFAULT 0,
+            approved_until TEXT DEFAULT NULL,
+            join_date TEXT,
+            last_active TEXT,
+            is_banned INTEGER DEFAULT 0,
+            ban_reason TEXT DEFAULT NULL,
+            is_admin INTEGER DEFAULT 0,
+            referral_code TEXT UNIQUE,
+            referred_by INTEGER DEFAULT NULL,
+            total_referrals INTEGER DEFAULT 0,
+            free_swaps_earned INTEGER DEFAULT 0,
+            total_swaps INTEGER DEFAULT 0,
+            successful_swaps INTEGER DEFAULT 0,
+            join_method TEXT DEFAULT 'direct'
+        )
+    ''')
+    
+    # Achievements table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS achievements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            achievement_id TEXT,
+            achievement_name TEXT,
+            achievement_emoji TEXT,
+            unlocked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    
+    # Swap history table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS swap_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            target_username TEXT,
+            status TEXT,
+            swap_time TEXT,
+            error_message TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    
+    # Insert admin if not exists
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
     if not cursor.fetchone():
-        user_referral_code = generate_referral_code(user_id)
+        referral_code = generate_referral_code(ADMIN_USER_ID)
         cursor.execute('''
-            INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, referral_code, join_method)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, username, first_name, last_name, 
+            INSERT INTO users (user_id, username, first_name, last_name, approved, approved_until, 
+                              join_date, last_active, is_banned, is_admin, referral_code, join_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (ADMIN_USER_ID, "admin", "Admin", "User", 1, "9999-12-31 23:59:59", 
               datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-              user_referral_code, 'direct'))
-        conn.commit()
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 1, referral_code, 'direct'))
         
-        # Process referral if any
-        if referral_code and referral_code != "direct":
-            process_referral(user_id, referral_code)
-        
-        # Award early adopter achievement for first 100 users
-        if get_total_users() <= 100:
-            award_achievement(user_id, "early_adopter")
-        if get_total_users() <= 50:
-            award_achievement(user_id, "first_user")
-    
-    conn.close()
-
-def update_user_active(user_id):
-    """Update user's last active time"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET last_active = ? WHERE user_id = ?", 
-                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
-    conn.commit()
-    conn.close()
-
-def get_user_status(user_id):
-    """Get user approval status"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT approved, approved_until, is_banned FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result:
-        approved = result[0]
-        approved_until = result[1]
-        is_banned = result[2]
-        
-        if is_banned:
-            return "banned"
-        
-        if approved == 1:
-            return "approved"
-    
-    return "pending"
-
-def get_user_detailed_stats(user_id):
-    """Get detailed user statistics for dashboard"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Get basic user info
-    cursor.execute('''
-        SELECT username, total_swaps, successful_swaps, total_referrals, free_swaps_earned
-        FROM users WHERE user_id = ?
-    ''', (user_id,))
-    user_data = cursor.fetchone()
-    
-    if not user_data:
-        conn.close()
-        return None
-    
-    username, total_swaps, successful_swaps, total_referrals, free_swaps = user_data
-    
-    # Calculate success rate
-    success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
-    
-    # Get recent swaps
-    cursor.execute('''
-        SELECT target_username, status, swap_time 
-        FROM swap_history 
-        WHERE user_id = ? 
-        ORDER BY swap_time DESC 
-        LIMIT 5
-    ''', (user_id,))
-    recent_swaps = cursor.fetchall()
-    
-    conn.close()
-    
-    # Get achievements
-    achievements = get_user_achievements(user_id)
-    
-    return {
-        "username": username or "User",
-        "bot_username": BOT_USERNAME,
-        "user_id": user_id,
-        "stats": [
-            {"name": "Total Swaps", "value": total_swaps},
-            {"name": "Successful Swaps", "value": successful_swaps},
-            {"name": "Success Rate", "value": f"{success_rate:.1f}%"},
-            {"name": "Total Referrals", "value": total_referrals},
-            {"name": "Free Swaps Available", "value": free_swaps},
-            {"name": "Account Status", "value": "✅ Approved" if get_user_status(user_id) == "approved" else "⏳ Pending"}
-        ],
-        "achievements": achievements,
-        "referrals": {
-            "count": total_referrals,
-            "free_swaps": free_swaps
-        },
-        "recent_swaps": [
-            {"target": s[0], "status": s[1], "time": s[2]} for s in recent_swaps
-        ]
-    }
-
-def keep_alive_loop():
-    """Internal loop to keep bot awake"""
-    while True:
-        try:
-            # Make request to self
-            requests.get("https://separate-genny-1carnage1-2b4c603c.koyeb.app/ping1", timeout=10)
-        except:
-            pass
-        time.sleep(300)  # 5 minutes
-
-# Start in background thread
-threading.Thread(target=keep_alive_loop, daemon=True).start()
-
-def log_swap(user_id, target_username, status, error_message=None):
-    """Log swap attempt to history"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message))
-    
-    # Update user stats
-    cursor.execute("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,))
-    if status == "success":
-        cursor.execute("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,))
+        # Award admin achievements
+        award_achievement(ADMIN_USER_ID, "founder")
+        award_achievement(ADMIN_USER_ID, "first_user")
     
     conn.commit()
     conn.close()
-    
-    # Award first swap achievement
-    if status == "success":
-        cursor.execute("SELECT COUNT(*) FROM swap_history WHERE user_id = ? AND status = 'success'", (user_id,))
-        success_count = cursor.fetchone()[0]
-        if success_count == 1:
-            award_achievement(user_id, "first_swap")
-        if success_count >= 10:
-            award_achievement(user_id, "swap_pro")
-
-def get_total_swaps():
-    """Get total swaps across all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(total_swaps) FROM users")
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result[0] else 0
-
-def get_total_users():
-    """Get total user count"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users")
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
-
-def get_active_users_count():
-    """Get count of users active in last 24 hours"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("SELECT COUNT(*) FROM users WHERE last_active > ?", (yesterday,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
-
-def approve_user(user_id, duration_days=None):
-    """Approve user access"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    if duration_days:
-        if duration_days == "permanent":
-            approved_until = "9999-12-31 23:59:59"
-        else:
-            approved_until = (datetime.now() + timedelta(days=int(duration_days))).strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        approved_until = "9999-12-31 23:59:59"
-    
-    cursor.execute("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
-                   (approved_until, user_id))
-    conn.commit()
-    conn.close()
-
-def ban_user(user_id, reason="No reason provided"):
-    """Ban a user"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", 
-                   (reason, user_id))
-    conn.commit()
-    conn.close()
-
-def get_all_users():
-    """Get all users"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, first_name, approved, approved_until, is_banned, total_referrals FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    return users
 
 # ==================== TUTORIAL SYSTEM ====================
 TUTORIAL_STEPS = [
@@ -809,6 +647,164 @@ def handle_tutorial_response(chat_id, text):
         return True
     
     return False
+
+# ==================== MENU FUNCTIONS ====================
+def show_main_menu(chat_id):
+    if not is_user_approved(chat_id):
+        return
+    
+    buttons = [
+        "📱 Main Session", "🎯 Target Session",
+        "🔄 Swapper", "⚙️ Settings",
+        "📊 Dashboard", "🎁 Referral",
+        "🏆 Achievements", "📈 Stats"
+    ]
+    markup = create_reply_menu(buttons, row_width=2, add_back=False)
+    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*", parse_mode='HTML', reply_markup=markup)
+
+def show_swapper_menu(chat_id):
+    if not is_user_approved(chat_id):
+        return
+    
+    buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap", "Back"]
+    markup = create_reply_menu(buttons, row_width=2)
+    bot.send_message(chat_id, "<b>🔄 CARNAGE Swapper - Select Option</b>", parse_mode='HTML', reply_markup=markup)
+
+def show_settings_menu(chat_id):
+    if not is_user_approved(chat_id):
+        return
+    
+    buttons = ["Bio", "Name", "Back"]
+    markup = create_reply_menu(buttons, row_width=2)
+    bot.send_message(chat_id, "<b>⚙️ CARNAGE Settings - Select Option</b>", parse_mode='HTML', reply_markup=markup)
+
+# ==================== FLASK ROUTES ====================
+@app.route('/')
+def health_check():
+    """Required route for Koyeb to keep service alive"""
+    return jsonify({
+        "status": "online",
+        "service": "CARNAGE Telegram Bot",
+        "timestamp": datetime.now().isoformat(),
+        "version": "3.0.0",
+        "features": ["dashboard", "referral", "tutorial", "achievements", "analytics"]
+    })
+
+@app.route('/ping1')
+def ping1():
+    return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
+
+@app.route('/ping2')
+def ping2():
+    return jsonify({"status": "pong2", "time": datetime.now().isoformat()})
+
+@app.route('/ping3')
+def ping3():
+    return jsonify({"status": "pong3", "time": datetime.now().isoformat()})
+
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
+@app.route('/stats')
+def web_stats():
+    """Web stats endpoint"""
+    return jsonify({
+        "total_users": get_total_users(),
+        "total_referrals": get_total_referrals(),
+        "total_swaps": get_total_swaps(),
+        "total_achievements": get_total_achievements_awarded()
+    })
+
+@app.route('/dashboard/<int:user_id>')
+def user_dashboard(user_id):
+    """Web dashboard for users"""
+    user_stats = get_user_detailed_stats(user_id)
+    achievements = get_user_achievements(user_id)
+    
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CARNAGE Dashboard - @{{username}}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background: #0f0f0f; color: white; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+            .card { background: #1a1a1a; padding: 20px; border-radius: 10px; margin-bottom: 15px; }
+            .stat { display: flex; justify-content: space-between; margin: 10px 0; }
+            .badge { background: #667eea; padding: 5px 10px; border-radius: 20px; font-size: 12px; }
+            .achievement { display: inline-block; background: #2a2a2a; padding: 10px; margin: 5px; border-radius: 5px; }
+            .referral-link { background: #2a2a2a; padding: 15px; border-radius: 5px; word-break: break-all; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🤖 CARNAGE Dashboard</h1>
+                <p>Welcome, @{{username}}! 👋</p>
+            </div>
+            
+            <div class="card">
+                <h2>📊 Your Statistics</h2>
+                {% for stat in stats %}
+                <div class="stat">
+                    <span>{{stat.name}}:</span>
+                    <strong>{{stat.value}}</strong>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <div class="card">
+                <h2>🏆 Achievements ({{achievements.unlocked}}/{{achievements.total}})</h2>
+                {% for ach in achievements.list %}
+                <div class="achievement">
+                    {{ach.emoji}} {{ach.name}}
+                </div>
+                {% endfor %}
+            </div>
+            
+            <div class="card">
+                <h2>👥 Referral Program</h2>
+                <p>Your Referrals: <strong>{{referrals.count}}</strong></p>
+                <p>Free Swaps Earned: <strong>{{referrals.free_swaps}}</strong></p>
+                <div class="referral-link">
+                    <strong>Your Referral Link:</strong><br>
+                    https://t.me/{{bot_username}}?start=ref-{{user_id}}
+                </div>
+                <p style="font-size: 12px; color: #888; margin-top: 10px;">
+                    ⭐ Each referral gives you 2 FREE swaps! No approval needed!
+                </p>
+            </div>
+            
+            <div class="card">
+                <h2>🚀 Quick Actions</h2>
+                <p><a href="https://t.me/{{bot_username}}?start=swap" style="color: #667eea;">Start New Swap</a></p>
+                <p><a href="https://t.me/{{bot_username}}?start=tutorial" style="color: #667eea;">Interactive Tutorial</a></p>
+                <p><a href="https://t.me/{{bot_username}}" style="color: #667eea;">Open Bot in Telegram</a></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return render_template_string(html_template, **user_stats)
+
+# ==================== KEEP ALIVE LOOP ====================
+def keep_alive_loop():
+    """Internal loop to keep bot awake"""
+    while True:
+        try:
+            # Make request to self
+            requests.get("https://separate-genny-1carnage1-2b4c603c.koyeb.app/ping1", timeout=10)
+        except:
+            pass
+        time.sleep(300)  # 5 minutes
+
+# Start in background thread
+threading.Thread(target=keep_alive_loop, daemon=True).start()
 
 # ==================== COMMAND HANDLERS ====================
 @bot.message_handler(commands=['start'])
@@ -1357,36 +1353,6 @@ def broadcast_command(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
-# ==================== MENU FUNCTIONS ====================
-def show_main_menu(chat_id):
-    if not is_user_approved(chat_id):
-        return
-    
-    buttons = [
-        "📱 Main Session", "🎯 Target Session",
-        "🔄 Swapper", "⚙️ Settings",
-        "📊 Dashboard", "🎁 Referral",
-        "🏆 Achievements", "📈 Stats"
-    ]
-    markup = create_reply_menu(buttons, row_width=2, add_back=False)
-    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*", parse_mode='HTML', reply_markup=markup)
-
-def show_swapper_menu(chat_id):
-    if not is_user_approved(chat_id):
-        return
-    
-    buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap", "Back"]
-    markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>🔄 CARNAGE Swapper - Select Option</b>", parse_mode='HTML', reply_markup=markup)
-
-def show_settings_menu(chat_id):
-    if not is_user_approved(chat_id):
-        return
-    
-    buttons = ["Bio", "Name", "Back"]
-    markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>⚙️ CARNAGE Settings - Select Option</b>", parse_mode='HTML', reply_markup=markup)
-
 # ==================== MENU HANDLERS ====================
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
@@ -1456,6 +1422,9 @@ def run_telegram_bot():
 # ==================== MAIN STARTUP ====================
 def main():
     """Start everything"""
+    # Initialize database first
+    init_database()
+    
     print("🚀 CARNAGE Swapper Bot v3.0 with Advanced Features")
     print(f"👑 Admin ID: {ADMIN_USER_ID}")
     print(f"🤖 Bot Username: @{BOT_USERNAME}")
