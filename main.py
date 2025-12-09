@@ -31,7 +31,7 @@ DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/Ikpd
 
 # ======= CHANNEL CONFIGURATION =======
 UPDATES_CHANNEL = "@CarnageUpdates"
-PROOFS_CHANNEL = "@CarnageProofs"
+PROOFS_CHANNEL = "@CarnageProof"
 CHANNELS = {
     "updates": {
         "id": UPDATES_CHANNEL,
