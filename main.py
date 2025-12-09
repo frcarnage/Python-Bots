@@ -24,7 +24,7 @@ ADMIN_USER_ID = int(os.environ.get('ADMIN_USER_ID', '7575087826'))
 BOT_USERNAME = "CarnageSwapperBot"
 
 # Instagram API Configuration
-DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/13588761041/-5MqmNYtm71bGnyH7Q5uxOcX"
+DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
 TELEGRAM_CHANNEL_ID = "-100"  # Replace with your channel ID
 
 # ======= CHANNEL CONFIGURATION =======
