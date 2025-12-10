@@ -3747,11 +3747,16 @@ def callback_handler(call):
                     price_text = f"{listing['price']} {listing['currency']}"
                 
                 markup = InlineKeyboardMarkup(row_width=2)
-                markup.add(
-                    InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}"),
-                    InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else callback_data="no_seller"),
-                    InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace")
-                )
+markup.add(
+    InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}")
+)
+
+if listing['seller_username']:
+    markup.add(InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}"))
+else:
+    markup.add(InlineKeyboardButton("📞 Contact Seller", callback_data="no_seller"))
+    
+markup.add(InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace"))
                 
                 verified_text = "✅ Verified" if listing["seller_session_encrypted"] else "❌ Not Verified"
                 
