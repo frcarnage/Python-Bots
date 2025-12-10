@@ -45,7 +45,7 @@ ENCRYPTION_KEY = get_encryption_key()
 cipher = Fernet(ENCRYPTION_KEY)
 
 # Instagram API Configuration
-DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/13588761041/-5MqmNYtm71bGnyH7Q5uxOcX"
+DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
 
 # ======= CHANNEL CONFIGURATION =======
@@ -2132,7 +2132,7 @@ def dashboard_command(message):
         send_welcome_with_channels(user_id, message.from_user.first_name)
         return
     
-    dashboard_url = f"https://your-koyeb-app.koyeb.app/dashboard/{user_id}"
+    dashboard_url = f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}"
     bot.send_message(user_id, f"📊 *Your Dashboard:*\n\n{dashboard_url}", parse_mode="Markdown")
 
 @bot.message_handler(commands=['referral', 'refer'])
@@ -3501,18 +3501,14 @@ def handle_tutorial_response(chat_id, text):
     """Handle tutorial responses"""
     pass
 
-@bot.message_handler(func=lambda message: message.chat.type == 'private')
-def handle_all_private_messages(message):
-    """Handle all text messages in private chat"""
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    """Handle all text messages"""
     user_id = message.chat.id
     text = message.text
     
     # Update user activity
-    execute_query(
-        "UPDATE users SET last_active = ? WHERE user_id = ?",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
-        commit=True
-    )
+    update_user_active(user_id)
     
     # Check if user is in selling state
     if user_id in user_states and user_states[user_id]["action"] == "selling":
@@ -3524,13 +3520,13 @@ def handle_all_private_messages(message):
         handle_pending_swap(user_id, text)
         return
     
-    # Check if it's a command
+    # If it's a command, let command handlers process it
     if text.startswith('/'):
-        # Let command handlers process it
         return
     
-    # Default response
-    show_main_menu(user_id)
+    # Handle private messages
+    if message.chat.type == 'private':
+        handle_private_messages(message)
 
 def handle_selling_state(user_id, text):
     """Handle user in selling state"""
@@ -3614,22 +3610,6 @@ def handle_selling_state(user_id, text):
         description = text if text.lower() != "skip" else ""
         state["description"] = description
         
-        # Ask for session to verify ownership
-        bot.send_message(
-            user_id,
-            f"🔐 *Verify Ownership*\n\n"
-            f"To list @{state['username']} for sale, you need to verify ownership.\n\n"
-            f"Please provide Instagram session ID for @{state['username']}:\n\n"
-            f"*Format:* `sessionid=abc123...`\n"
-            f"This session will be encrypted and stored securely.",
-            parse_mode="Markdown"
-        )
-        
-        state["step"] = "get_session"
-    
-    elif state["step"] == "get_session":
-        session_id = text.strip()
-        
         # Create listing first
         success, listing_id = create_marketplace_listing(
             user_id,
@@ -3647,19 +3627,35 @@ def handle_selling_state(user_id, text):
         
         state["listing_id"] = listing_id
         
-        # Verify session
-        success, result = verify_seller_session(user_id, listing_id, session_id)
+        # Ask for session to verify ownership
+        bot.send_message(
+            user_id,
+            f"🔐 *Verify Ownership*\n\n"
+            f"To list @{state['username']} for sale, you need to verify ownership.\n\n"
+            f"Please provide Instagram session ID for @{state['username']}:\n\n"
+            f"*Format:* `sessionid=abc123...`\n"
+            f"This session will be encrypted and stored securely.",
+            parse_mode="Markdown"
+        )
+        
+        state["step"] = "get_session"
+    
+    elif state["step"] == "get_session":
+        session_id = text.strip()
+        
+        # Verify session with the created listing
+        success, result = verify_seller_session(user_id, state["listing_id"], session_id)
         
         if success:
             # Store session
-            save_session_to_db(user_id, "marketplace_seller", session_id, listing_id)
+            save_session_to_db(user_id, "marketplace_seller", session_id, state["listing_id"])
             
             bot.send_message(
                 user_id,
                 f"✅ *Listing Created Successfully!*\n\n"
                 f"Username: @{state['username']}\n"
                 f"Price: {state['price']} {state['currency']}\n"
-                f"Listing ID: `{listing_id}`\n\n"
+                f"Listing ID: `{state['listing_id']}`\n\n"
                 f"*Your listing is now active in marketplace!*\n"
                 f"View it with /marketplace\n\n"
                 f"*Note:* When someone buys, middleman will contact you for session.",
@@ -4254,8 +4250,8 @@ def main():
     print("• Session Verification: Required for sellers")
     
     print("\n🔗 **URLS:**")
-    print(f"• Dashboard: https://your-koyeb-app.koyeb.app/dashboard/USER_ID")
-    print(f"• Admin Panel: https://your-koyeb-app.koyeb.app/admin?auth=carnage123")
+    print(f"• Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/USER_ID")
+    print(f"• Admin Panel: https://separate-genny-1carnage1-2b4c603c.koyeb.app/admin?auth=carnage123")
     
     print("\n✅ **PRODUCTION READY WITH ALL FEATURES!**")
     
