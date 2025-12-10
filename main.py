@@ -84,6 +84,8 @@ pending_swaps = {}
 verified_mms = {ADMIN_USER_ID}
 swap_sessions = {}
 active_listings = {}
+bidding_sessions = {}
+vouch_requests = {}
 
 # Database connection pool
 db_lock = threading.Lock()
@@ -812,7 +814,11 @@ def init_database():
                     target_session_encrypted TEXT DEFAULT NULL,
                     target_username TEXT DEFAULT NULL,
                     backup_session_encrypted TEXT DEFAULT NULL,
-                    backup_username TEXT DEFAULT NULL
+                    backup_username TEXT DEFAULT NULL,
+                    vouch_score INTEGER DEFAULT 0,
+                    positive_vouches INTEGER DEFAULT 0,
+                    negative_vouches INTEGER DEFAULT 0,
+                    total_transactions INTEGER DEFAULT 0
                 )
             ''')
             
@@ -865,6 +871,7 @@ def init_database():
                     price REAL,
                     currency TEXT DEFAULT 'inr',
                     listing_type TEXT DEFAULT 'sale',
+                    sale_type TEXT DEFAULT 'fixed',
                     status TEXT DEFAULT 'active',
                     description TEXT,
                     seller_session_encrypted TEXT DEFAULT NULL,
@@ -875,7 +882,25 @@ def init_database():
                     bids INTEGER DEFAULT 0,
                     highest_bid REAL DEFAULT 0,
                     highest_bidder INTEGER DEFAULT NULL,
+                    auction_end_time TEXT DEFAULT NULL,
+                    min_increment REAL DEFAULT 100,
+                    current_bid REAL DEFAULT 0,
+                    buy_now_price REAL DEFAULT 0,
                     FOREIGN KEY (seller_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Auction bids
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS auction_bids (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    listing_id TEXT,
+                    bidder_id INTEGER,
+                    bid_amount REAL,
+                    bid_time TEXT,
+                    is_winning INTEGER DEFAULT 0,
+                    FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
+                    FOREIGN KEY (bidder_id) REFERENCES users (user_id)
                 )
             ''')
             
@@ -888,7 +913,6 @@ def init_database():
                     seller_id INTEGER,
                     buyer_id INTEGER,
                     mm_id INTEGER DEFAULT NULL,
-                    mm2_id INTEGER DEFAULT NULL,
                     amount REAL,
                     currency TEXT,
                     status TEXT DEFAULT 'created',
@@ -904,11 +928,30 @@ def init_database():
                     refunded_at TEXT,
                     dispute_reason TEXT,
                     notes TEXT,
+                    vouch_requested INTEGER DEFAULT 0,
+                    vouch_given INTEGER DEFAULT 0,
+                    vouch_type TEXT DEFAULT NULL,
+                    vouch_comment TEXT DEFAULT NULL,
                     FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
                     FOREIGN KEY (seller_id) REFERENCES users (user_id),
                     FOREIGN KEY (buyer_id) REFERENCES users (user_id),
-                    FOREIGN KEY (mm_id) REFERENCES users (user_id),
-                    FOREIGN KEY (mm2_id) REFERENCES users (user_id)
+                    FOREIGN KEY (mm_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Vouches
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS vouches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    swap_id TEXT,
+                    user_id INTEGER,
+                    vouch_for INTEGER,
+                    vouch_type TEXT,
+                    comment TEXT,
+                    vouch_time TEXT,
+                    verified INTEGER DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id),
+                    FOREIGN KEY (vouch_for) REFERENCES users (user_id)
                 )
             ''')
             
@@ -1398,14 +1441,18 @@ def get_user_detailed_stats(user_id):
     """Get detailed user statistics"""
     user_data = execute_one('''
         SELECT username, total_swaps, successful_swaps, total_referrals, free_swaps_earned,
-               join_date, last_active, tier, credits
+               join_date, last_active, tier, credits, vouch_score, positive_vouches,
+               negative_vouches, total_transactions
         FROM users WHERE user_id = ?
     ''', (user_id,))
     
     if not user_data:
         return None
     
-    username, total_swaps, successful_swaps, total_referrals, free_swaps, join_date, last_active, tier, credits = user_data
+    (username, total_swaps, successful_swaps, total_referrals, free_swaps, 
+     join_date, last_active, tier, credits, vouch_score, positive_vouches,
+     negative_vouches, total_transactions) = user_data
+    
     success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
     
     recent_swaps = execute_query('''
@@ -1431,6 +1478,10 @@ def get_user_detailed_stats(user_id):
         "last_active": last_active,
         "tier": tier,
         "credits": credits,
+        "vouch_score": vouch_score,
+        "positive_vouches": positive_vouches,
+        "negative_vouches": negative_vouches,
+        "total_transactions": total_transactions,
         "total_swaps": total_swaps,
         "successful_swaps": successful_swaps,
         "success_rate": success_rate,
@@ -1625,6 +1676,8 @@ def refreshbot_command(message):
         rate_limit_cooldowns.clear()
         user_states.clear()
         pending_swaps.clear()
+        bidding_sessions.clear()
+        vouch_requests.clear()
         
         # Reinitialize database connection
         init_database()
@@ -1724,7 +1777,8 @@ def botstatus_command(message):
             f"*Marketplace Stats:*\n"
             f"• Active Listings: `{active_listings}`\n"
             f"• Active Swaps: `{active_swaps}`\n"
-            f"• Total Listings: `{execute_one('SELECT COUNT(*) FROM marketplace_listings')[0] or 0}`\n\n"
+            f"• Total Listings: `{execute_one('SELECT COUNT(*) FROM marketplace_listings')[0] or 0}`\n"
+            f"• Active Auctions: `{execute_one('SELECT COUNT(*) FROM marketplace_listings WHERE sale_type = \"auction\" AND status = \"active\"')[0] or 0}`\n\n"
             
             f"*Service Status:*\n"
             f"• Instagram API: {api_status}\n"
@@ -1736,6 +1790,7 @@ def botstatus_command(message):
             f"• Session Data: `{len(session_data)} users`\n"
             f"• Pending Swaps: `{len(pending_swaps)}`\n"
             f"• User States: `{len(user_states)}`\n"
+            f"• Bidding Sessions: `{len(bidding_sessions)}`\n"
         )
         
         bot.reply_to(message, response, parse_mode="Markdown")
@@ -1768,7 +1823,8 @@ def admin_users(message):
         
         users = execute_query('''
             SELECT user_id, username, first_name, tier, approved, is_banned, 
-                   credits, total_swaps, successful_swaps, join_date, total_referrals
+                   credits, total_swaps, successful_swaps, join_date, total_referrals,
+                   vouch_score, positive_vouches, negative_vouches
             FROM users 
             ORDER BY user_id
             LIMIT ? OFFSET ?
@@ -1788,7 +1844,8 @@ def admin_users(message):
                 f"Name: {user['first_name']} (@{user['username'] or 'N/A'})\n"
                 f"Tier: {user['tier'].upper()} | Credits: {user['credits']}\n"
                 f"Swaps: {user['total_swaps']} ({user['successful_swaps']}✅)\n"
-                f"Referrals: {user['total_referrals']} | Status: {status}\n"
+                f"Referrals: {user['total_referrals']} | Vouch: {user['vouch_score']} ({user['positive_vouches']}+/{user['negative_vouches']}-)\n"
+                f"Status: {status}\n"
                 f"Joined: {user['join_date'][:10]}\n"
                 f"────────────────────\n"
             )
@@ -2193,6 +2250,7 @@ def help_command(message):
 /stats - Your statistics
 /achievements - Your unlocked badges
 /referral - Your referral link
+/vouches - Your vouch profile
 
 *Swap Features (DM ONLY):*
 • Real Instagram username swapping
@@ -2203,6 +2261,20 @@ def help_command(message):
 *Marketplace Features (DM ONLY):*
 /marketplace - Browse username listings
 /sell - List username for sale (Real money only)
+/bid - Place bid on auction
+/mybids - View your active bids
+
+*Auction System:*
+• Fixed price and auction listings
+• Automatic bid increments
+• Buy Now option
+• Fake bid protection (permanent ban for fake bids)
+
+*Vouch System:*
+• Automatic vouch requests after swaps
+• Positive/negative feedback
+• Vouch score calculation
+• Verified transactions only
 
 *Admin Commands (Admin only - DM ONLY):*
 /users - List all users
@@ -2222,7 +2294,6 @@ def help_command(message):
 /rcvd - Mark payment received
 /release - Release funds
 /refund - Refund transaction
-/joinswap - Join existing swap as second MM
 
 *Official Channels:*
 📢 Updates: @CarnageUpdates
@@ -2333,6 +2404,12 @@ def stats_command(message):
 *Referral Stats:*
 • Total Referrals: {stats['total_referrals']}
 • Free Swaps Available: {stats['free_swaps']}
+
+*Vouch Stats:*
+• Vouch Score: {stats['vouch_score']}
+• Positive Vouches: {stats['positive_vouches']}
+• Negative Vouches: {stats['negative_vouches']}
+• Total Transactions: {stats['total_transactions']}
 
 *Credits:*
 • Balance: {stats['credits']} 🪙
@@ -2741,33 +2818,260 @@ def achievements_command(message):
     
     bot.send_message(user_id, response, parse_mode="Markdown")
 
-# ==================== MARKETPLACE FUNCTIONS ====================
-@bot.message_handler(commands=['marketplace', 'mp'])
-def marketplace_command(message):
-    """Browse marketplace listings"""
+# ==================== VOUCH SYSTEM ====================
+@bot.message_handler(commands=['vouches'])
+def vouches_command(message):
+    """Show user's vouch profile"""
     if message.chat.type != 'private':
         return
     
     user_id = message.from_user.id
+    if not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
     
+    # Get user vouch stats
+    user_stats = execute_one('''
+        SELECT username, vouch_score, positive_vouches, negative_vouches, total_transactions
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
+    
+    if not user_stats:
+        bot.send_message(user_id, "❌ User not found")
+        return
+    
+    username, vouch_score, positive, negative, total_transactions = user_stats
+    
+    # Get recent vouches
+    recent_vouches = execute_query('''
+        SELECT v.vouch_type, v.comment, v.vouch_time, u.username as vouch_by
+        FROM vouches v
+        JOIN users u ON v.user_id = u.user_id
+        WHERE v.vouch_for = ? AND v.verified = 1
+        ORDER BY v.vouch_time DESC
+        LIMIT 10
+    ''', (user_id,))
+    
+    response = f"""
+🤝 *Vouch Profile: @{username or user_id}*
+
+*Vouch Score:* {vouch_score} ⭐
+*Positive Vouches:* {positive} ✅
+*Negative Vouches:* {negative} ❌
+*Total Transactions:* {total_transactions} 📊
+*Trust Level:* {get_trust_level(vouch_score)}
+
+*Recent Vouches:*
+"""
+    
+    if recent_vouches:
+        for vouch in recent_vouches:
+            emoji = "✅" if vouch[0] == "positive" else "❌"
+            response += f"\n{emoji} *{vouch[0].title()}* by @{vouch[3]}"
+            if vouch[1]:
+                response += f"\n\"{vouch[1][:50]}...\""
+            response += f"\n{vouch[2][:10]}\n"
+    else:
+        response += "\nNo vouches yet. Complete transactions to get vouches!"
+    
+    bot.send_message(user_id, response, parse_mode="Markdown")
+
+def get_trust_level(vouch_score):
+    """Get trust level based on vouch score"""
+    if vouch_score >= 100:
+        return "🔒 Highly Trusted"
+    elif vouch_score >= 50:
+        return "✅ Trusted"
+    elif vouch_score >= 20:
+        return "👍 Reliable"
+    elif vouch_score >= 5:
+        return "🆗 New User"
+    else:
+        return "🆕 Unrated"
+
+def request_vouch(swap_id, seller_id, buyer_id):
+    """Request vouch from users after successful swap"""
+    swap = execute_one('''
+        SELECT ms.swap_id, ml.username, ms.amount, ms.currency
+        FROM marketplace_swaps ms
+        JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
+        WHERE ms.swap_id = ?
+    ''', (swap_id,))
+    
+    if not swap:
+        return
+    
+    # Request vouch from buyer for seller
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ Positive", callback_data=f"vouch_positive_{swap_id}_{seller_id}"),
+        InlineKeyboardButton("❌ Negative", callback_data=f"vouch_negative_{swap_id}_{seller_id}"),
+        InlineKeyboardButton("⏩ Skip", callback_data=f"vouch_skip_{swap_id}")
+    )
+    
+    vouch_requests[buyer_id] = {
+        "swap_id": swap_id,
+        "vouch_for": seller_id,
+        "step": "waiting"
+    }
+    
+    bot.send_message(
+        buyer_id,
+        f"🤝 *Please leave a vouch for the seller*\n\n"
+        f"Transaction: @{swap[1]}\n"
+        f"Amount: {swap[2]} {swap[3]}\n"
+        f"Swap ID: `{swap_id}`\n\n"
+        f"Your vouch helps build trust in the community!",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+    
+    # Request vouch from seller for buyer
+    markup2 = InlineKeyboardMarkup(row_width=2)
+    markup2.add(
+        InlineKeyboardButton("✅ Positive", callback_data=f"vouch_positive_{swap_id}_{buyer_id}"),
+        InlineKeyboardButton("❌ Negative", callback_data=f"vouch_negative_{swap_id}_{buyer_id}"),
+        InlineKeyboardButton("⏩ Skip", callback_data=f"vouch_skip_{swap_id}")
+    )
+    
+    vouch_requests[seller_id] = {
+        "swap_id": swap_id,
+        "vouch_for": buyer_id,
+        "step": "waiting"
+    }
+    
+    bot.send_message(
+        seller_id,
+        f"🤝 *Please leave a vouch for the buyer*\n\n"
+        f"Transaction: @{swap[1]}\n"
+        f"Amount: {swap[2]} {swap[3]}\n"
+        f"Swap ID: `{swap_id}`\n\n"
+        f"Your vouch helps build trust in the community!",
+        parse_mode="Markdown",
+        reply_markup=markup2
+    )
+
+def process_vouch(user_id, swap_id, vouch_for, vouch_type, comment=None):
+    """Process vouch submission"""
+    # Record vouch
+    execute_query('''
+        INSERT INTO vouches (swap_id, user_id, vouch_for, vouch_type, comment, vouch_time, verified)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        swap_id, user_id, vouch_for, vouch_type, comment,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1
+    ), commit=True)
+    
+    # Update vouch statistics
+    if vouch_type == "positive":
+        execute_query('''
+            UPDATE users 
+            SET vouch_score = vouch_score + 10,
+                positive_vouches = positive_vouches + 1
+            WHERE user_id = ?
+        ''', (vouch_for,), commit=True)
+    else:
+        execute_query('''
+            UPDATE users 
+            SET vouch_score = vouch_score - 5,
+                negative_vouches = negative_vouches + 1
+            WHERE user_id = ?
+        ''', (vouch_for,), commit=True)
+    
+    # Update total transactions
+    execute_query('''
+        UPDATE users 
+        SET total_transactions = total_transactions + 1
+        WHERE user_id IN (?, ?)
+    ''', (user_id, vouch_for), commit=True)
+    
+    # Post to proofs channel if positive
+    if vouch_type == "positive":
+        try:
+            vouch_by = execute_one("SELECT username FROM users WHERE user_id = ?", (user_id,))
+            vouch_by_name = f"@{vouch_by[0]}" if vouch_by and vouch_by[0] else f"User {user_id}"
+            
+            vouch_for_user = execute_one("SELECT username FROM users WHERE user_id = ?", (vouch_for))
+            vouch_for_name = f"@{vouch_for_user[0]}" if vouch_for_user and vouch_for_user[0] else f"User {vouch_for}"
+            
+            swap_info = execute_one('''
+                SELECT ml.username, ms.amount, ms.currency
+                FROM marketplace_swaps ms
+                JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
+                WHERE ms.swap_id = ?
+            ''', (swap_id,))
+            
+            if swap_info:
+                bot.send_message(
+                    CHANNELS['proofs']['id'],
+                    f"🤝 *NEW VOUCH!*\n\n"
+                    f"✅ *Positive vouch*\n"
+                    f"From: {vouch_by_name}\n"
+                    f"For: {vouch_for_name}\n"
+                    f"Transaction: @{swap_info[0]}\n"
+                    f"Amount: {swap_info[1]} {swap_info[2]}\n"
+                    f"Swap ID: `{swap_id}`\n\n"
+                    f"*Comment:* {comment or 'No comment'}",
+                    parse_mode="Markdown"
+                )
+        except:
+            pass
+    
+    # Remove from pending requests
+    if user_id in vouch_requests:
+        del vouch_requests[user_id]
+    
+    # Mark swap as vouched
+    if vouch_type == "positive":
+        execute_query(
+            "UPDATE marketplace_swaps SET vouch_given = 1 WHERE swap_id = ?",
+            (swap_id,), commit=True
+        )
+    
+    return True
+
+# ==================== MARKETPLACE FUNCTIONS ====================
+@bot.message_handler(commands=['marketplace', 'mp'])
+def marketplace_command(message):
+    """Browse marketplace listings with inline buttons"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    if not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
+    # Get active listings
     listings = execute_query('''
-        SELECT ml.*, u.username as seller_username, u.tier as seller_tier
+        SELECT ml.*, u.username as seller_username, u.tier as seller_tier,
+               u.vouch_score as seller_vouch_score
         FROM marketplace_listings ml
         JOIN users u ON ml.seller_id = u.user_id
-        WHERE ml.status = 'active' AND ml.currency != 'credits'
+        WHERE ml.status = 'active'
         ORDER BY ml.created_at DESC
         LIMIT 10
     ''')
     
     if not listings:
-        response = "🛒 *Marketplace*\n\nNo active listings found.\nBe the first to list with /sell"
-        bot.send_message(user_id, response, parse_mode="Markdown")
+        # No listings - show create listing button
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("➕ Create Listing", callback_data="create_listing"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
+        )
+        
+        response = "🛒 *CARNAGE MARKETPLACE*\n\nNo active listings found.\n\nBe the first to list a username for sale!"
+        bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
         return
     
     response = "🛒 *CARNAGE MARKETPLACE*\n\n"
     response += "*Active Listings:*\n\n"
     
+    markup = InlineKeyboardMarkup(row_width=2)
+    
     for listing in listings:
+        # Format price
         currency_symbol = "💲"
         if listing["currency"] == "inr":
             price_text = f"₹{listing['price']}"
@@ -2776,33 +3080,49 @@ def marketplace_command(message):
         else:
             price_text = f"{listing['price']} {listing['currency']}"
         
-        bid_text = f" ({listing['bids']} bids)" if listing["bids"] > 0 else ""
+        # Add listing type indicator
+        sale_type = listing["sale_type"]
+        type_emoji = "💰" if sale_type == "fixed" else "🎯" if sale_type == "auction" else "🛒"
+        
+        # Add vouch badge
+        vouch_badge = ""
+        if listing["seller_vouch_score"] >= 50:
+            vouch_badge = " 🔒"
+        elif listing["seller_vouch_score"] >= 20:
+            vouch_badge = " ✅"
         
         response += (
-            f"🔹 *@{listing['username']}*\n"
-            f"Price: {currency_symbol} {price_text}{bid_text}\n"
-            f"Seller: @{listing['seller_username']} ({listing['seller_tier'].upper()})\n"
+            f"{type_emoji} *@{listing['username']}*\n"
+            f"Price: {currency_symbol} {price_text}\n"
+            f"Seller: @{listing['seller_username']}{vouch_badge} ({listing['seller_tier'].upper()})\n"
+            f"Type: {sale_type.upper()}\n"
             f"ID: `{listing['listing_id']}`\n"
             f"────────────────────\n"
         )
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("➕ List Username", callback_data="create_listing"),
-        InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
-    )
-    
-    for listing in listings[:3]:
+        
+        # Add inline button for this listing
+        button_text = f"🛒 @{listing['username']}"
+        if sale_type == "auction":
+            button_text = f"🎯 @{listing['username']}"
+        elif sale_type == "buy_now":
+            button_text = f"💰 @{listing['username']}"
+        
         markup.add(InlineKeyboardButton(
-            f"🛒 @{listing['username']}",
+            button_text,
             callback_data=f"view_listing_{listing['listing_id']}"
         ))
+    
+    # Add action buttons
+    markup.add(
+        InlineKeyboardButton("➕ Create Listing", callback_data="create_listing"),
+        InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
+    )
     
     bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
 
 @bot.message_handler(commands=['sell'])
 def sell_command(message):
-    """Start selling process"""
+    """Start selling process - FIXED VERSION"""
     if message.chat.type != 'private':
         return
     
@@ -2818,6 +3138,15 @@ def sell_command(message):
         bot.send_message(user_id, "❌ Your account is not approved yet. Contact admin or use referral system.")
         return
     
+    # Clear any existing state
+    if user_id in user_states:
+        del user_states[user_id]
+    
+    user_states[user_id] = {
+        "action": "selling",
+        "step": "get_username"
+    }
+    
     bot.send_message(
         user_id,
         "🛒 *List a Username for Sale*\n\n"
@@ -2826,14 +3155,11 @@ def sell_command(message):
         "*Note:* You'll need to provide session ID to verify ownership.",
         parse_mode="Markdown"
     )
-    
-    user_states[user_id] = {
-        "action": "selling",
-        "step": "get_username"
-    }
 
 def create_marketplace_listing(user_id, username, price, currency="inr", 
-                               listing_type="sale", description=""):
+                               listing_type="sale", sale_type="fixed", 
+                               description="", auction_duration_hours=24,
+                               buy_now_price=None, min_increment=100):
     """Create a new marketplace listing"""
     
     existing = execute_one(
@@ -2849,16 +3175,28 @@ def create_marketplace_listing(user_id, username, price, currency="inr",
     
     listing_id = generate_listing_id()
     
+    # Set auction end time if auction
+    expires_at = None
+    auction_end_time = None
+    if sale_type == "auction":
+        auction_end_time = (datetime.now() + timedelta(hours=auction_duration_hours)).strftime("%Y-%m-%d %H:%M:%S")
+        expires_at = auction_end_time
+    else:
+        expires_at = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    
     execute_query('''
         INSERT INTO marketplace_listings 
-        (listing_id, seller_id, username, price, currency, listing_type, 
-         description, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (listing_id, seller_id, username, price, currency, listing_type, sale_type,
+         description, created_at, expires_at, auction_end_time, min_increment, buy_now_price)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        listing_id, user_id, username, price, currency, listing_type,
+        listing_id, user_id, username, price, currency, listing_type, sale_type,
         description,
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        expires_at,
+        auction_end_time,
+        min_increment,
+        buy_now_price
     ), commit=True)
     
     return True, listing_id
@@ -2889,6 +3227,324 @@ def verify_seller_session(user_id, listing_id, session_id):
     )
     
     return True, "Session verified and stored"
+
+# ==================== AUCTION SYSTEM ====================
+@bot.message_handler(commands=['bid'])
+def bid_command(message):
+    """Place a bid on an auction"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    if not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
+    if not is_user_approved(user_id):
+        bot.send_message(user_id, "❌ Your account is not approved yet.")
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 3:
+            bot.send_message(user_id, "Usage: /bid <listing_id> <bid_amount>")
+            return
+        
+        listing_id = parts[1]
+        try:
+            bid_amount = float(parts[2])
+        except ValueError:
+            bot.send_message(user_id, "❌ Invalid bid amount. Please enter a number.")
+            return
+        
+        # Check listing
+        listing = execute_one('''
+            SELECT ml.*, u.username as seller_username
+            FROM marketplace_listings ml
+            JOIN users u ON ml.seller_id = u.user_id
+            WHERE ml.listing_id = ? AND ml.status = 'active' AND ml.sale_type = 'auction'
+        ''', (listing_id,))
+        
+        if not listing:
+            bot.send_message(user_id, "❌ Listing not found, not active, or not an auction.")
+            return
+        
+        # Check if auction has ended
+        if listing["auction_end_time"]:
+            end_time = datetime.strptime(listing["auction_end_time"], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() > end_time:
+                bot.send_message(user_id, "❌ Auction has ended.")
+                return
+        
+        # Check if user is the seller
+        if listing["seller_id"] == user_id:
+            bot.send_message(user_id, "❌ You cannot bid on your own listing.")
+            return
+        
+        # Check minimum bid
+        current_bid = listing["current_bid"] or listing["price"]
+        min_next_bid = current_bid + listing["min_increment"]
+        
+        if bid_amount < min_next_bid:
+            bot.send_message(
+                user_id,
+                f"❌ Bid too low. Minimum bid: {min_next_bid} {listing['currency']}"
+            )
+            return
+        
+        # Check buy now price
+        if listing["buy_now_price"] and bid_amount >= listing["buy_now_price"]:
+            # Execute buy now
+            execute_query('''
+                UPDATE marketplace_listings 
+                SET current_bid = ?, highest_bidder = ?, status = 'reserved'
+                WHERE listing_id = ?
+            ''', (bid_amount, user_id, listing_id), commit=True)
+            
+            # Create swap automatically
+            swap_id = generate_swap_id()
+            execute_query('''
+                INSERT INTO marketplace_swaps 
+                (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                swap_id, listing_id, listing["seller_id"], user_id,
+                bid_amount, listing["currency"], "created",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ), commit=True)
+            
+            bot.send_message(
+                user_id,
+                f"✅ *Buy Now Executed!*\n\n"
+                f"Username: @{listing['username']}\n"
+                f"Price: {bid_amount} {listing['currency']}\n"
+                f"Swap ID: `{swap_id}`\n\n"
+                f"Middleman will contact you shortly.",
+                parse_mode="Markdown"
+            )
+            
+            # Notify seller
+            bot.send_message(
+                listing["seller_id"],
+                f"💰 *Your listing sold via Buy Now!*\n\n"
+                f"Username: @{listing['username']}\n"
+                f"Price: {bid_amount} {listing['currency']}\n"
+                f"Buyer: User {user_id}\n"
+                f"Swap ID: `{swap_id}`\n\n"
+                f"Wait for middleman instructions.",
+                parse_mode="Markdown"
+            )
+            
+            # Notify admin group
+            try:
+                bot.send_message(
+                    ADMIN_GROUP_ID,
+                    f"🛒 *BUY NOW EXECUTED!*\n\n"
+                    f"Listing: `{listing_id}`\n"
+                    f"Username: `{listing['username']}`\n"
+                    f"Seller: {listing['seller_username']}\n"
+                    f"Buyer: {user_id}\n"
+                    f"Price: {bid_amount} {listing['currency']}\n"
+                    f"Swap ID: `{swap_id}`",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            return
+        
+        # Place regular bid
+        execute_query('''
+            UPDATE marketplace_listings 
+            SET current_bid = ?, highest_bidder = ?, bids = bids + 1
+            WHERE listing_id = ?
+        ''', (bid_amount, user_id, listing_id), commit=True)
+        
+        # Record bid
+        execute_query('''
+            INSERT INTO auction_bids (listing_id, bidder_id, bid_amount, bid_time, is_winning)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            listing_id, user_id, bid_amount,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1
+        ), commit=True)
+        
+        # Update previous winning bid
+        execute_query('''
+            UPDATE auction_bids SET is_winning = 0 
+            WHERE listing_id = ? AND bidder_id != ? AND is_winning = 1
+        ''', (listing_id, user_id), commit=True)
+        
+        bot.send_message(
+            user_id,
+            f"✅ *Bid Placed!*\n\n"
+            f"Username: @{listing['username']}\n"
+            f"Your Bid: {bid_amount} {listing['currency']}\n"
+            f"Current Winning Bid: Yes\n\n"
+            f"*Warning:* Fake bids will result in permanent ban!",
+            parse_mode="Markdown"
+        )
+        
+        # Notify previous highest bidder if any
+        if listing["highest_bidder"] and listing["highest_bidder"] != user_id:
+            try:
+                bot.send_message(
+                    listing["highest_bidder"],
+                    f"⚠️ *You've been outbid!*\n\n"
+                    f"Username: @{listing['username']}\n"
+                    f"New Highest Bid: {bid_amount} {listing['currency']}\n"
+                    f"Your previous bid: {listing['current_bid']} {listing['currency']}",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+        
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Error placing bid: {str(e)}")
+
+@bot.message_handler(commands=['mybids'])
+def mybids_command(message):
+    """View user's active bids"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    if not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
+    # Get active bids
+    active_bids = execute_query('''
+        SELECT ml.listing_id, ml.username, ab.bid_amount, ml.currency, 
+               ml.auction_end_time, ml.current_bid, ml.highest_bidder
+        FROM auction_bids ab
+        JOIN marketplace_listings ml ON ab.listing_id = ml.listing_id
+        WHERE ab.bidder_id = ? AND ml.status = 'active' AND ml.sale_type = 'auction'
+        ORDER BY ab.bid_time DESC
+        LIMIT 10
+    ''', (user_id,))
+    
+    if not active_bids:
+        bot.send_message(user_id, "📭 *No active bids*\n\nYou haven't placed any bids on active auctions.")
+        return
+    
+    response = "🎯 *Your Active Bids*\n\n"
+    
+    for bid in active_bids:
+        is_winning = "✅" if bid[6] == user_id else "❌"
+        end_time = bid[4][:16] if bid[4] else "No end time"
+        
+        response += (
+            f"{is_winning} *@{bid[1]}*\n"
+            f"Your Bid: {bid[2]} {bid[3]}\n"
+            f"Current Bid: {bid[5] or bid[2]} {bid[3]}\n"
+            f"Auction Ends: {end_time}\n"
+            f"ID: `{bid[0]}`\n"
+            f"────────────────────\n"
+        )
+    
+    bot.send_message(user_id, response, parse_mode="Markdown")
+
+def check_auction_endings():
+    """Check and process ended auctions"""
+    try:
+        ended_auctions = execute_query('''
+            SELECT ml.*, u.username as seller_username
+            FROM marketplace_listings ml
+            JOIN users u ON ml.seller_id = u.user_id
+            WHERE ml.sale_type = 'auction' AND ml.status = 'active' 
+            AND ml.auction_end_time IS NOT NULL 
+            AND ml.auction_end_time < ?
+        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+        
+        for auction in ended_auctions:
+            if auction["highest_bidder"]:
+                # Auction sold - create swap
+                swap_id = generate_swap_id()
+                execute_query('''
+                    INSERT INTO marketplace_swaps 
+                    (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    swap_id, auction["listing_id"], auction["seller_id"], auction["highest_bidder"],
+                    auction["current_bid"], auction["currency"], "created",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ), commit=True)
+                
+                # Update listing status
+                execute_query(
+                    "UPDATE marketplace_listings SET status = 'reserved' WHERE listing_id = ?",
+                    (auction["listing_id"],), commit=True
+                )
+                
+                # Notify winner
+                try:
+                    bot.send_message(
+                        auction["highest_bidder"],
+                        f"🎉 *You won the auction!*\n\n"
+                        f"Username: @{auction['username']}\n"
+                        f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
+                        f"Swap ID: `{swap_id}`\n\n"
+                        f"Middleman will contact you shortly.",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                
+                # Notify seller
+                try:
+                    bot.send_message(
+                        auction["seller_id"],
+                        f"💰 *Auction Ended - Sold!*\n\n"
+                        f"Username: @{auction['username']}\n"
+                        f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
+                        f"Buyer: User {auction['highest_bidder']}\n"
+                        f"Swap ID: `{swap_id}`\n\n"
+                        f"Wait for middleman instructions.",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                
+                # Notify admin group
+                try:
+                    bot.send_message(
+                        ADMIN_GROUP_ID,
+                        f"🏆 *AUCTION ENDED - SOLD!*\n\n"
+                        f"Listing: `{auction['listing_id']}`\n"
+                        f"Username: `{auction['username']}`\n"
+                        f"Seller: {auction['seller_username']}\n"
+                        f"Buyer: {auction['highest_bidder']}\n"
+                        f"Price: {auction['current_bid']} {auction['currency']}\n"
+                        f"Swap ID: `{swap_id}`",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+            else:
+                # No bids - mark as expired
+                execute_query(
+                    "UPDATE marketplace_listings SET status = 'expired' WHERE listing_id = ?",
+                    (auction["listing_id"],), commit=True
+                )
+                
+                # Notify seller
+                try:
+                    bot.send_message(
+                        auction["seller_id"],
+                        f"⏰ *Auction Ended - No Bids*\n\n"
+                        f"Username: @{auction['username']}\n"
+                        f"No bids were placed on your auction.\n"
+                        f"You can relist it with /sell",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+        
+        print(f"✅ Processed {len(ended_auctions)} ended auctions")
+        
+    except Exception as e:
+        print(f"❌ Error checking auction endings: {e}")
 
 # ==================== MIDDLEMAN SYSTEM ====================
 @bot.message_handler(commands=['mm'])
@@ -2947,7 +3603,8 @@ def mm_command(message):
                     target_id,
                     "🎉 *You are now a Verified Middleman!*\n\n"
                     "You can now use middleman commands in the admin group.\n"
-                    "Join: @CarnageMMGroup",
+                    "Join: @CarnageMMGroup\n\n"
+                    "Use /mmhelp for commands",
                     parse_mode="Markdown"
                 )
             except:
@@ -2989,10 +3646,9 @@ def mmhelp_command(message):
 🔧 *Middleman Commands (Use in Admin Group Only):*
 
 *Swap Management:*
-`/createswap <listing_id> <buyer_id/@username> [mm_id]` - Create new swap
+`/createswap <listing_id> <buyer_id/@username>` - Create new swap
 `/swapinfo <swap_id>` - View swap details
 `/swaplist` - List all active swaps
-`/joinswap <swap_id>` - Join as second middleman (Max 2 MMs per swap)
 
 *Payment Processing:*
 `/rcvd <swap_id> <payment_method> <proof>` - Mark payment received
@@ -3011,15 +3667,14 @@ def mmhelp_command(message):
 `/mmstats` - Your middleman statistics
 
 *Rules:*
-• Maximum 2 middlemen per swap
-• Only one MM can mark payment received
-• Both MMs must agree for release/refund
+• ONE middleman per swap only
 • Sessions are encrypted and deleted after swap
+• Fake bids lead to permanent ban
+• Always verify payment proof
 
 *Examples:*
 • `/createswap LIST12345 @buyer_username`
 • `/rcvd SWAP12345 upi upi_transaction_id`
-• `/joinswap SWAP12345`
 • `/release SWAP12345`
 """
     
@@ -3038,25 +3693,13 @@ def createswap_command(message):
     try:
         parts = message.text.split()
         if len(parts) < 3:
-            bot.reply_to(message, "Usage: /createswap <listing_id> <buyer_id/@username> [mm_id]")
+            bot.reply_to(message, "Usage: /createswap <listing_id> <buyer_id/@username>")
             bot.reply_to(message, "Example: /createswap LIST12345 @username\nExample: /createswap LIST12345 123456789")
             return
         
         listing_id = parts[1]
         buyer_identifier = parts[2]
-        mm_id = user_id  # Default to command user
-        
-        # Optional: specify different MM
-        if len(parts) > 3:
-            try:
-                specified_mm = int(parts[3])
-                if is_verified_mm(specified_mm):
-                    mm_id = specified_mm
-                else:
-                    bot.reply_to(message, "❌ Specified user is not a verified middleman")
-                    return
-            except:
-                pass
+        mm_id = user_id  # Current user is the middleman
         
         # Get listing details
         listing = execute_one('''
@@ -3141,7 +3784,6 @@ def createswap_command(message):
 
 *Commands:*
 • `/rcvd {swap_id} <payment_method> <proof>` - Mark payment
-• `/joinswap {swap_id}` - Join as second MM
 • `/swapinfo {swap_id}` - View details
 """
         
@@ -3182,96 +3824,6 @@ def createswap_command(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
-@bot.message_handler(commands=['joinswap'], chat_types=['group', 'supergroup'])
-def joinswap_command(message):
-    """Join existing swap as second middleman"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /joinswap <swap_id>")
-            return
-        
-        swap_id = parts[1]
-        
-        # Get swap details
-        swap = execute_one('''
-            SELECT ms.*, 
-                   ml.username as listing_username,
-                   u1.username as seller_username,
-                   u2.username as buyer_username,
-                   u3.username as mm_username,
-                   u4.username as mm2_username
-            FROM marketplace_swaps ms
-            JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-            JOIN users u1 ON ms.seller_id = u1.user_id
-            JOIN users u2 ON ms.buyer_id = u2.user_id
-            LEFT JOIN users u3 ON ms.mm_id = u3.user_id
-            LEFT JOIN users u4 ON ms.mm2_id = u4.user_id
-            WHERE ms.swap_id = ?
-        ''', (swap_id,))
-        
-        if not swap:
-            bot.reply_to(message, "❌ Swap not found")
-            return
-        
-        # Check if swap is active
-        if swap["status"] not in ["created", "payment_received"]:
-            bot.reply_to(message, f"❌ Swap status is {swap['status']}. Can only join active swaps.")
-            return
-        
-        # Check if user is already a MM for this swap
-        if swap["mm_id"] == user_id or swap["mm2_id"] == user_id:
-            bot.reply_to(message, "❌ You are already a middleman for this swap")
-            return
-        
-        # Check if swap already has 2 MMs
-        if swap["mm2_id"]:
-            bot.reply_to(message, "❌ Swap already has maximum 2 middlemen")
-            return
-        
-        # Add as second middleman
-        execute_query('''
-            UPDATE marketplace_swaps 
-            SET mm2_id = ?
-            WHERE swap_id = ?
-        ''', (user_id, swap_id), commit=True)
-        
-        # Notify in group
-        bot.reply_to(
-            message,
-            f"🤝 *Middleman Joined!*\n\n"
-            f"Swap ID: `{swap_id}`\n"
-            f"Username: `{swap['listing_username']}`\n"
-            f"Primary MM: {swap['mm_username']}\n"
-            f"Secondary MM: {message.from_user.username}\n\n"
-            f"*Note:* Both MMs must agree for release/refund.",
-            parse_mode="Markdown"
-        )
-        
-        # Notify primary MM
-        if swap["mm_id"]:
-            try:
-                bot.send_message(
-                    swap["mm_id"],
-                    f"🤝 *Another Middleman Joined Your Swap!*\n\n"
-                    f"Swap ID: `{swap_id}`\n"
-                    f"Username: `{swap['listing_username']}`\n"
-                    f"New MM: {message.from_user.username}\n\n"
-                    f"Both of you must agree for release/refund.",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
 @bot.message_handler(commands=['rcvd'], chat_types=['group', 'supergroup'])
 def rcvd_command(message):
     """Mark payment as received (Middleman only)"""
@@ -3304,15 +3856,11 @@ def rcvd_command(message):
             SELECT ms.*, 
                    ml.username as listing_username,
                    u1.username as seller_username,
-                   u2.username as buyer_username,
-                   u3.username as mm_username,
-                   u4.username as mm2_username
+                   u2.username as buyer_username
             FROM marketplace_swaps ms
             JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
             JOIN users u1 ON ms.seller_id = u1.user_id
             JOIN users u2 ON ms.buyer_id = u2.user_id
-            LEFT JOIN users u3 ON ms.mm_id = u3.user_id
-            LEFT JOIN users u4 ON ms.mm2_id = u4.user_id
             WHERE ms.swap_id = ?
         ''', (swap_id,))
         
@@ -3320,9 +3868,9 @@ def rcvd_command(message):
             bot.reply_to(message, "❌ Swap not found")
             return
         
-        # Check if current user is a MM for this swap
-        if swap["mm_id"] != user_id and swap["mm2_id"] != user_id:
-            bot.reply_to(message, "❌ You are not a middleman for this swap")
+        # Check if current user is the MM for this swap
+        if swap["mm_id"] != user_id:
+            bot.reply_to(message, "❌ You are not the middleman for this swap")
             return
         
         # Check if payment already marked
@@ -3349,7 +3897,6 @@ def rcvd_command(message):
 *Method:* {payment_method.upper()}
 *Proof:* {payment_proof}
 *Marked by:* {message.from_user.username}
-*Middlemen:* {swap['mm_username']} {f"+ {swap['mm2_username']}" if swap['mm2_username'] else ""}
 
 *Next Steps:*
 1. Ask seller for session: `/getsession seller {swap_id}`
@@ -3422,9 +3969,9 @@ def getsession_command(message):
             bot.reply_to(message, "❌ Swap not found")
             return
         
-        # Check if current user is a MM for this swap
-        if swap["mm_id"] != user_id and swap["mm2_id"] != user_id:
-            bot.reply_to(message, "❌ You are not a middleman for this swap")
+        # Check if current user is the MM for this swap
+        if swap["mm_id"] != user_id:
+            bot.reply_to(message, "❌ You are not the middleman for this swap")
             return
         
         if party == "seller":
@@ -3562,7 +4109,10 @@ def handle_swap_session(user_id, session_id, role, swap_id):
             except:
                 pass
             
-            return True, "Swap executed successfully! Funds ready for release."
+            # Request vouches
+            request_vouch(swap_id, swap["seller_id"], swap["buyer_id"])
+            
+            return True, "Swap executed successfully! Funds ready for release. Vouch requested from both parties."
         else:
             return False, "Swap execution failed"
     
@@ -3630,17 +4180,10 @@ def release_command(message):
             bot.reply_to(message, "❌ Swap not found")
             return
         
-        # Check if current user is a MM for this swap
-        if swap["mm_id"] != user_id and swap["mm2_id"] != user_id:
-            bot.reply_to(message, "❌ You are not a middleman for this swap")
+        # Check if current user is the MM for this swap
+        if swap["mm_id"] != user_id:
+            bot.reply_to(message, "❌ You are not the middleman for this swap")
             return
-        
-        # Check if swap has 2 MMs and both agree
-        if swap["mm2_id"]:
-            # Need agreement from both MMs
-            # Check if there's a release vote system (simplified for now)
-            # In real implementation, you'd have a voting system
-            pass
         
         # Check if swap was completed
         if swap["status"] != "swap_completed":
@@ -3705,15 +4248,10 @@ def refund_command(message):
             bot.reply_to(message, "❌ Swap not found")
             return
         
-        # Check if current user is a MM for this swap
-        if swap["mm_id"] != user_id and swap["mm2_id"] != user_id:
-            bot.reply_to(message, "❌ You are not a middleman for this swap")
+        # Check if current user is the MM for this swap
+        if swap["mm_id"] != user_id:
+            bot.reply_to(message, "❌ You are not the middleman for this swap")
             return
-        
-        # Check if swap has 2 MMs and both agree
-        if swap["mm2_id"]:
-            # Need agreement from both MMs
-            pass
         
         # Update status
         execute_query(
@@ -3774,6 +4312,11 @@ def handle_all_messages(message):
         handle_pending_swap(user_id, text)
         return
     
+    # Check if user is in vouch state
+    if user_id in vouch_requests and vouch_requests[user_id]["step"] == "waiting_comment":
+        handle_vouch_comment(user_id, text)
+        return
+    
     # If it's a command, let command handlers process it
     if text.startswith('/'):
         return
@@ -3783,7 +4326,10 @@ def handle_all_messages(message):
         handle_private_messages(message)
 
 def handle_selling_state(user_id, text):
-    """Handle user in selling state"""
+    """Handle user in selling state - FIXED VERSION"""
+    if user_id not in user_states or user_states[user_id]["action"] != "selling":
+        return
+    
     state = user_states[user_id]
     
     if state["step"] == "get_username":
@@ -3805,35 +4351,29 @@ def handle_selling_state(user_id, text):
             return
         
         state["username"] = username
-        state["step"] = "get_price"
+        state["step"] = "get_sale_type"
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("💰 Fixed Price", callback_data="sale_type_fixed"),
+            InlineKeyboardButton("🎯 Auction", callback_data="sale_type_auction"),
+            InlineKeyboardButton("🛒 Buy Now + Auction", callback_data="sale_type_buy_now")
+        )
         
         bot.send_message(
             user_id,
-            f"💰 *Set Price for @{username}*\n\n"
-            f"Enter price and currency:\n\n"
-            f"*Formats:*\n"
-            f"• `5000 inr` (Indian Rupees)\n"
-            f"• `100 usdt` (USDT Crypto)\n\n"
-            f"*Real currency only! Credits not allowed in marketplace.*\n"
-            f"Minimum: ₹1000 or $10 USDT",
-            parse_mode="Markdown"
+            f"🎯 *Select Sale Type for @{username}*\n\n"
+            f"• *Fixed Price:* Set a fixed price\n"
+            f"• *Auction:* Accept bids for 24 hours\n"
+            f"• *Buy Now + Auction:* Set buy now price + accept bids\n\n"
+            f"Choose an option:",
+            parse_mode="Markdown",
+            reply_markup=markup
         )
     
     elif state["step"] == "get_price":
         try:
-            parts = text.split()
-            if len(parts) < 2:
-                bot.send_message(user_id, "❌ Format: <amount> <currency>")
-                return
-            
-            price = float(parts[0])
-            currency = parts[1].lower()
-            
-            # Validate currency (only real money allowed)
-            valid_currencies = ["inr", "usdt"]
-            if currency not in valid_currencies:
-                bot.send_message(user_id, f"❌ Marketplace accepts only real currency: {', '.join(valid_currencies)}")
-                return
+            price = float(text.strip())
             
             # Validate minimum price
             min_prices = {
@@ -3841,19 +4381,86 @@ def handle_selling_state(user_id, text):
                 "usdt": 10
             }
             
+            currency = state.get("currency", "inr")
             if price < min_prices.get(currency, 1000):
                 bot.send_message(user_id, f"❌ Minimum price for {currency} is {min_prices[currency]}")
                 return
             
             state["price"] = price
-            state["currency"] = currency
+            
+            if state.get("sale_type") == "auction":
+                state["step"] = "get_min_increment"
+                bot.send_message(
+                    user_id,
+                    f"📈 *Set Minimum Bid Increment*\n\n"
+                    f"Current starting price: {price} {currency}\n"
+                    f"Enter minimum bid increment amount:\n\n"
+                    f"Example: `100` (means bids must increase by at least 100)",
+                    parse_mode="Markdown"
+                )
+            elif state.get("sale_type") == "buy_now":
+                state["step"] = "get_buy_now_price"
+                bot.send_message(
+                    user_id,
+                    f"💰 *Set Buy Now Price*\n\n"
+                    f"Starting price: {price} {currency}\n"
+                    f"Enter buy now price (users can buy immediately at this price):\n\n"
+                    f"Must be higher than starting price.",
+                    parse_mode="Markdown"
+                )
+            else:
+                state["step"] = "get_description"
+                bot.send_message(
+                    user_id,
+                    f"📝 *Add Description for @{state['username']}*\n\n"
+                    f"Price: {price} {currency}\n\n"
+                    f"Enter description (optional):\n"
+                    f"Or type 'skip' to skip",
+                    parse_mode="Markdown"
+                )
+            
+        except ValueError:
+            bot.send_message(user_id, "❌ Please enter valid amount")
+    
+    elif state["step"] == "get_min_increment":
+        try:
+            min_increment = float(text.strip())
+            if min_increment < 10:
+                bot.send_message(user_id, "❌ Minimum increment must be at least 10")
+                return
+            
+            state["min_increment"] = min_increment
             state["step"] = "get_description"
             
             bot.send_message(
                 user_id,
                 f"📝 *Add Description for @{state['username']}*\n\n"
+                f"Starting Price: {state['price']} {state['currency']}\n"
+                f"Min Increment: {min_increment} {state['currency']}\n\n"
                 f"Enter description (optional):\n"
                 f"Or type 'skip' to skip",
+                parse_mode="Markdown"
+            )
+            
+        except ValueError:
+            bot.send_message(user_id, "❌ Please enter valid amount")
+    
+    elif state["step"] == "get_buy_now_price":
+        try:
+            buy_now_price = float(text.strip())
+            if buy_now_price <= state["price"]:
+                bot.send_message(user_id, f"❌ Buy now price must be higher than starting price ({state['price']})")
+                return
+            
+            state["buy_now_price"] = buy_now_price
+            state["step"] = "get_min_increment"
+            
+            bot.send_message(
+                user_id,
+                f"📈 *Set Minimum Bid Increment*\n\n"
+                f"Starting price: {state['price']} {state['currency']}\n"
+                f"Buy now price: {buy_now_price} {state['currency']}\n\n"
+                f"Enter minimum bid increment amount:",
                 parse_mode="Markdown"
             )
             
@@ -3864,14 +4471,22 @@ def handle_selling_state(user_id, text):
         description = text if text.lower() != "skip" else ""
         state["description"] = description
         
-        # Create listing first
+        # Create listing
+        buy_now_price = state.get("buy_now_price")
+        min_increment = state.get("min_increment", 100)
+        sale_type = state.get("sale_type", "fixed")
+        
         success, listing_id = create_marketplace_listing(
             user_id,
             state["username"],
             state["price"],
             state["currency"],
             "sale",
-            state["description"]
+            sale_type,
+            state["description"],
+            24,  # auction duration hours
+            buy_now_price,
+            min_increment
         )
         
         if not success:
@@ -3904,11 +4519,25 @@ def handle_selling_state(user_id, text):
             # Store session
             save_session_to_db(user_id, "marketplace_seller", session_id, state["listing_id"])
             
+            # Format listing details
+            currency_symbol = "💲"
+            if state["currency"] == "inr":
+                price_text = f"₹{state['price']}"
+            elif state["currency"] == "usdt":
+                price_text = f"${state['price']} USDT"
+            
+            sale_type_text = ""
+            if state.get("sale_type") == "auction":
+                sale_type_text = f"\nAuction Duration: 24 hours\nMin Increment: {state.get('min_increment', 100)} {state['currency']}"
+            elif state.get("sale_type") == "buy_now":
+                sale_type_text = f"\nBuy Now Price: {state['buy_now_price']} {state['currency']}\nAuction Duration: 24 hours\nMin Increment: {state.get('min_increment', 100)} {state['currency']}"
+            
             bot.send_message(
                 user_id,
                 f"✅ *Listing Created Successfully!*\n\n"
                 f"Username: @{state['username']}\n"
-                f"Price: {state['price']} {state['currency']}\n"
+                f"Price: {currency_symbol} {price_text}\n"
+                f"Type: {state.get('sale_type', 'fixed').upper()}{sale_type_text}\n"
                 f"Listing ID: `{state['listing_id']}`\n\n"
                 f"*Your listing is now active in marketplace!*\n"
                 f"View it with /marketplace\n\n"
@@ -3918,17 +4547,14 @@ def handle_selling_state(user_id, text):
             
             # Post to marketplace channel
             try:
-                currency_symbol = "💲"
-                if state["currency"] == "inr":
-                    price_text = f"₹{state['price']}"
-                elif state["currency"] == "usdt":
-                    price_text = f"${state['price']} USDT"
+                type_emoji = "💰" if state.get("sale_type") == "fixed" else "🎯" if state.get("sale_type") == "auction" else "🛒"
                 
                 bot.send_message(
                     MARKETPLACE_CHANNEL_ID,
                     f"🆕 *NEW LISTING!*\n\n"
-                    f"Username: `@{state['username']}`\n"
+                    f"{type_emoji} Username: `@{state['username']}`\n"
                     f"Price: {currency_symbol} {price_text}\n"
+                    f"Type: {state.get('sale_type', 'fixed').upper()}{sale_type_text}\n"
                     f"Seller: Verified ✅\n"
                     f"Listing ID: `{state['listing_id']}`\n\n"
                     f"To buy, contact middleman with listing ID.",
@@ -3945,6 +4571,9 @@ def handle_selling_state(user_id, text):
 
 def handle_pending_swap(user_id, text):
     """Handle pending swap session collection"""
+    if user_id not in pending_swaps:
+        return
+    
     swap_data = pending_swaps[user_id]
     swap_id = swap_data["swap_id"]
     role = swap_data["role"]
@@ -3957,12 +4586,30 @@ def handle_pending_swap(user_id, text):
     if success:
         bot.send_message(user_id, f"✅ {result}", parse_mode="Markdown")
     else:
-        bot.send_message(user_id, f"❌ {result}\n\nPlease send valid session ID:", parse_mode="Markdown")
+        bot.send_message(user_id, f"❌ {result}\n\nPlease send valid session ID:", parse_mode="Markup")
         return
     
     # Remove from pending if not waiting for other party
     if "Waiting for other party" not in result:
         del pending_swaps[user_id]
+
+def handle_vouch_comment(user_id, text):
+    """Handle vouch comment"""
+    if user_id not in vouch_requests:
+        return
+    
+    vouch_data = vouch_requests[user_id]
+    comment = text.strip()
+    
+    # Process vouch with comment
+    success = process_vouch(user_id, vouch_data["swap_id"], vouch_data["vouch_for"], vouch_data["vouch_type"], comment)
+    
+    if success:
+        bot.send_message(user_id, "✅ Vouch submitted successfully! Thank you!")
+    else:
+        bot.send_message(user_id, "❌ Error submitting vouch")
+    
+    del vouch_requests[user_id]
 
 # ==================== CALLBACK HANDLERS ====================
 @bot.callback_query_handler(func=lambda call: True)
@@ -4005,17 +4652,75 @@ def callback_handler(call):
         elif data == "create_listing":
             sell_command(call.message)
             bot.answer_callback_query(call.id)
+        
+        elif data.startswith("sale_type_"):
+            sale_type = data.split("_")[2]
+            
+            if user_id not in user_states or user_states[user_id]["action"] != "selling":
+                bot.answer_callback_query(call.id, "❌ Invalid state", show_alert=True)
+                return
+            
+            user_states[user_id]["sale_type"] = sale_type
+            user_states[user_id]["step"] = "get_currency"
+            
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("🇮🇳 Indian Rupees (INR)", callback_data="currency_inr"),
+                InlineKeyboardButton("💲 USDT Crypto", callback_data="currency_usdt")
+            )
+            
+            bot.edit_message_text(
+                f"💱 *Select Currency*\n\n"
+                f"Sale Type: {sale_type.upper()}\n"
+                f"Username: @{user_states[user_id]['username']}\n\n"
+                f"Choose currency:",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+            
+        elif data.startswith("currency_"):
+            currency = data.split("_")[1]
+            
+            if user_id not in user_states or user_states[user_id]["action"] != "selling":
+                bot.answer_callback_query(call.id, "❌ Invalid state", show_alert=True)
+                return
+            
+            user_states[user_id]["currency"] = currency
+            user_states[user_id]["step"] = "get_price"
+            
+            # Show minimum prices
+            min_prices = {
+                "inr": "₹1000",
+                "usdt": "$10 USDT"
+            }
+            
+            bot.edit_message_text(
+                f"💰 *Set Price for @{user_states[user_id]['username']}*\n\n"
+                f"Sale Type: {user_states[user_id]['sale_type'].upper()}\n"
+                f"Currency: {currency.upper()}\n"
+                f"Minimum Price: {min_prices.get(currency, '₹1000')}\n\n"
+                f"Enter price amount:\n\n"
+                f"Example: `5000`",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown"
+            )
             
         elif data.startswith("view_listing_"):
             listing_id = data.split("_")[2]
             listing = execute_one('''
-                SELECT ml.*, u.username as seller_username, u.tier as seller_tier
+                SELECT ml.*, u.username as seller_username, u.tier as seller_tier,
+                       u.vouch_score as seller_vouch_score, u.positive_vouches,
+                       u.negative_vouches
                 FROM marketplace_listings ml
                 JOIN users u ON ml.seller_id = u.user_id
                 WHERE ml.listing_id = ?
             ''', (listing_id,))
             
             if listing:
+                # Format price
                 currency_symbol = "💲"
                 if listing["currency"] == "inr":
                     price_text = f"₹{listing['price']}"
@@ -4024,13 +4729,50 @@ def callback_handler(call):
                 else:
                     price_text = f"{listing['price']} {listing['currency']}"
                 
+                # Format vouch info
+                vouch_info = ""
+                if listing["seller_vouch_score"] > 0:
+                    vouch_info = f"\n*Vouch Score:* {listing['seller_vouch_score']} ({listing['positive_vouches']}+/{listing['negative_vouches']}-)"
+                
+                # Format sale type info
+                sale_type_info = ""
+                if listing["sale_type"] == "auction":
+                    current_bid = listing["current_bid"] or listing["price"]
+                    bids = listing["bids"] or 0
+                    end_time = listing["auction_end_time"][:16] if listing["auction_end_time"] else "No end time"
+                    sale_type_info = f"""
+*Auction Details:*
+• Current Bid: {current_bid} {listing['currency']}
+• Bids: {bids}
+• Ends: {end_time}
+• Min Increment: {listing['min_increment']} {listing['currency']}
+"""
+                    if listing["buy_now_price"]:
+                        sale_type_info += f"• Buy Now: {listing['buy_now_price']} {listing['currency']}"
+                
                 markup = InlineKeyboardMarkup(row_width=2)
-                contact_button_url = f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}"
-                markup.add(
-                    InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}"),
-                    InlineKeyboardButton("📞 Contact Seller", url=contact_button_url),
-                    InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace")
-                )
+                
+                # Add different buttons based on sale type
+                if listing["sale_type"] == "fixed":
+                    markup.add(
+                        InlineKeyboardButton("🛒 Buy Now", callback_data=f"buy_fixed_{listing_id}"),
+                        InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}")
+                    )
+                elif listing["sale_type"] == "auction":
+                    markup.add(
+                        InlineKeyboardButton("🎯 Place Bid", callback_data=f"bid_auction_{listing_id}"),
+                        InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}")
+                    )
+                    if listing["buy_now_price"]:
+                        markup.add(InlineKeyboardButton("💰 Buy Now", callback_data=f"buy_now_{listing_id}"))
+                elif listing["sale_type"] == "buy_now":
+                    markup.add(
+                        InlineKeyboardButton("💰 Buy Now", callback_data=f"buy_now_{listing_id}"),
+                        InlineKeyboardButton("🎯 Place Bid", callback_data=f"bid_auction_{listing_id}"),
+                        InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}")
+                    )
+                
+                markup.add(InlineKeyboardButton("🔙 Back to Marketplace", callback_data="refresh_marketplace"))
                 
                 verified_text = "✅ Verified" if listing["seller_session_encrypted"] else "❌ Not Verified"
                 
@@ -4040,8 +4782,10 @@ def callback_handler(call):
                     f"*Price:* {currency_symbol} {price_text}\n"
                     f"*Seller:* @{listing['seller_username'] or 'User'}\n"
                     f"*Seller Tier:* {listing['seller_tier'].upper()}\n"
-                    f"*Verification:* {verified_text}\n"
-                    f"*Status:* {listing['status'].capitalize()}\n\n"
+                    f"*Verification:* {verified_text}{vouch_info}\n"
+                    f"*Sale Type:* {listing['sale_type'].upper()}\n"
+                    f"*Status:* {listing['status'].capitalize()}\n"
+                    f"{sale_type_info}\n\n"
                     f"*Description:* {listing['description'] or 'No description'}\n\n"
                     f"*Listing ID:* `{listing_id}`\n"
                     f"*Created:* {listing['created_at'][:10]}\n"
@@ -4056,8 +4800,8 @@ def callback_handler(call):
                     reply_markup=markup
                 )
             
-        elif data.startswith("buy_"):
-            listing_id = data.split("_")[1]
+        elif data.startswith("buy_fixed_"):
+            listing_id = data.split("_")[2]
             listing = execute_one('''
                 SELECT ml.*, u.username as seller_username, u.user_id as seller_id
                 FROM marketplace_listings ml
@@ -4074,8 +4818,9 @@ def callback_handler(call):
                 bot.answer_callback_query(call.id, "You cannot buy your own listing", show_alert=True)
                 return
             
-            # Show purchase instructions
-            response = (
+            # Send contact message to buyer
+            bot.send_message(
+                user_id,
                 f"🛒 *Purchase @{listing['username']}*\n\n"
                 f"*Price:* {listing['price']} {listing['currency']}\n"
                 f"*Seller:* @{listing['seller_username'] or 'User'}\n\n"
@@ -4086,17 +4831,167 @@ def callback_handler(call):
                 f"4. Make payment as instructed\n"
                 f"5. Provide session when asked\n\n"
                 f"*Admin Group:* @CarnageMMGroup\n"
-                f"*Listing ID:* `{listing_id}`"
+                f"*Listing ID:* `{listing_id}`",
+                parse_mode="Markdown"
+            )
+            
+            # Also notify the seller
+            try:
+                buyer_info = call.from_user.username or f"User {user_id}"
+                bot.send_message(
+                    listing["seller_id"],
+                    f"🛒 *Someone wants to buy your listing!*\n\n"
+                    f"Username: @{listing['username']}\n"
+                    f"Price: {listing['price']} {listing['currency']}\n"
+                    f"Interested Buyer: @{buyer_info}\n\n"
+                    f"Buyer has been instructed to contact middleman.\n"
+                    f"Listing ID: `{listing_id}`",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            bot.answer_callback_query(call.id, "Instructions sent! Check your messages.")
+        
+        elif data.startswith("bid_auction_"):
+            listing_id = data.split("_")[2]
+            
+            if user_id in bidding_sessions:
+                del bidding_sessions[user_id]
+            
+            bidding_sessions[user_id] = {
+                "listing_id": listing_id,
+                "step": "get_bid"
+            }
+            
+            listing = execute_one('''
+                SELECT ml.*, u.username as seller_username
+                FROM marketplace_listings ml
+                JOIN users u ON ml.seller_id = u.user_id
+                WHERE ml.listing_id = ?
+            ''', (listing_id,))
+            
+            if listing:
+                current_bid = listing["current_bid"] or listing["price"]
+                min_next_bid = current_bid + listing["min_increment"]
+                
+                bot.send_message(
+                    user_id,
+                    f"🎯 *Place Bid on @{listing['username']}*\n\n"
+                    f"Current Bid: {current_bid} {listing['currency']}\n"
+                    f"Minimum Next Bid: {min_next_bid} {listing['currency']}\n"
+                    f"Your Bid Must Be: ≥ {min_next_bid} {listing['currency']}\n\n"
+                    f"*Enter your bid amount:*\n\n"
+                    f"*WARNING:* Fake bids will result in PERMANENT BAN!",
+                    parse_mode="Markdown"
+                )
+            
+            bot.answer_callback_query(call.id)
+        
+        elif data.startswith("buy_now_"):
+            listing_id = data.split("_")[2]
+            listing = execute_one('''
+                SELECT ml.*, u.username as seller_username, u.user_id as seller_id
+                FROM marketplace_listings ml
+                JOIN users u ON ml.seller_id = u.user_id
+                WHERE ml.listing_id = ?
+            ''', (listing_id,))
+            
+            if not listing:
+                bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
+                return
+            
+            # Check if user is the seller
+            if listing["seller_id"] == user_id:
+                bot.answer_callback_query(call.id, "You cannot buy your own listing", show_alert=True)
+                return
+            
+            if not listing["buy_now_price"]:
+                bot.answer_callback_query(call.id, "Buy Now not available for this listing", show_alert=True)
+                return
+            
+            # Confirm buy now
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("✅ Confirm Buy Now", callback_data=f"confirm_buy_now_{listing_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"view_listing_{listing_id}")
             )
             
             bot.edit_message_text(
-                response,
+                f"💰 *Confirm Buy Now*\n\n"
+                f"Username: @{listing['username']}\n"
+                f"Buy Now Price: {listing['buy_now_price']} {listing['currency']}\n"
+                f"Seller: @{listing['seller_username'] or 'User'}\n\n"
+                f"*Are you sure you want to buy now?*\n\n"
+                f"This will create a swap immediately and middleman will contact you.",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+            
+            bot.answer_callback_query(call.id)
+        
+        elif data.startswith("confirm_buy_now_"):
+            listing_id = data.split("_")[3]
+            
+            # Call the bid function with buy now price
+            listing = execute_one('''
+                SELECT ml.*, u.username as seller_username
+                FROM marketplace_listings ml
+                JOIN users u ON ml.seller_id = u.user_id
+                WHERE ml.listing_id = ?
+            ''', (listing_id,))
+            
+            if listing and listing["buy_now_price"]:
+                # Simulate bid command
+                message_text = f"/bid {listing_id} {listing['buy_now_price']}"
+                bid_command(type('Message', (), {'chat': type('Chat', (), {'id': user_id, 'type': 'private'}), 'text': message_text, 'from_user': call.from_user})())
+            
+            bot.answer_callback_query(call.id)
+        
+        elif data.startswith("vouch_"):
+            parts = data.split("_")
+            if len(parts) < 4:
+                bot.answer_callback_query(call.id, "Invalid vouch data", show_alert=True)
+                return
+            
+            vouch_type = parts[1]
+            swap_id = parts[2]
+            vouch_for = int(parts[3])
+            
+            if vouch_type == "skip":
+                # Skip vouch
+                if user_id in vouch_requests:
+                    del vouch_requests[user_id]
+                bot.answer_callback_query(call.id, "Vouch skipped")
+                bot.edit_message_text(
+                    "⏩ Vouch skipped. Thank you for your transaction!",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
+                return
+            
+            # Store vouch request
+            vouch_requests[user_id] = {
+                "swap_id": swap_id,
+                "vouch_for": vouch_for,
+                "vouch_type": vouch_type,
+                "step": "waiting_comment"
+            }
+            
+            # Ask for comment
+            bot.edit_message_text(
+                f"💬 *Add a comment for your {vouch_type} vouch*\n\n"
+                f"Enter your comment (optional):\n"
+                f"Or type 'skip' to skip comment",
                 call.message.chat.id,
                 call.message.message_id,
                 parse_mode="Markdown"
             )
+            
             bot.answer_callback_query(call.id)
-        
+            
         elif data.startswith("unban_"):
             if not is_admin(user_id):
                 bot.answer_callback_query(call.id, "❌ Admin only", show_alert=True)
@@ -4161,6 +5056,17 @@ def callback_handler(call):
         print(f"Callback error: {e}")
         bot.answer_callback_query(call.id, f"Error: {str(e)}", show_alert=True)
 
+# ==================== AUCTION CHECKER THREAD ====================
+def auction_checker_thread():
+    """Background thread to check auction endings"""
+    while True:
+        try:
+            check_auction_endings()
+            time.sleep(60)  # Check every minute
+        except Exception as e:
+            print(f"Error in auction checker: {e}")
+            time.sleep(60)
+
 # ==================== FLASK ROUTES ====================
 @app.route('/')
 def health_check():
@@ -4168,10 +5074,11 @@ def health_check():
         "status": "online",
         "service": "CARNAGE Swapper Bot",
         "timestamp": datetime.now().isoformat(),
-        "version": "7.0.0",
-        "features": ["Instagram API", "Session Encryption", "Marketplace", "Escrow", "Middleman System"],
+        "version": "8.0.0",
+        "features": ["Instagram API", "Session Encryption", "Marketplace", "Auction System", "Vouch System", "Escrow"],
         "users": execute_one("SELECT COUNT(*) FROM users")[0] or 0,
-        "listings": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active'")[0] or 0
+        "listings": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active'")[0] or 0,
+        "auctions": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE sale_type = 'auction' AND status = 'active'")[0] or 0
     })
 
 @app.route('/dashboard/<int:user_id>')
@@ -4258,7 +5165,7 @@ def admin_panel():
         # Get users for initial table
         users = execute_query('''
             SELECT user_id, username, first_name, tier, approved, is_banned, 
-                   credits, total_swaps, successful_swaps
+                   credits, total_swaps, successful_swaps, vouch_score
             FROM users 
             ORDER BY user_id
             LIMIT 20
@@ -4275,7 +5182,7 @@ def admin_panel():
                 <td>@{user[1] or 'N/A'}</td>
                 <td><span class="badge">{user[3].upper()}</span></td>
                 <td>{user[6]} ({user[7]}✅)</td>
-                <td>{user[8]}</td>
+                <td>{user[9]}⭐</td>
                 <td><span class="badge {status_class}">{status_text}</span></td>
                 <td>
                     <button class="btn btn-small" onclick="adminAction('approve', {user[0]})">Approve</button>
@@ -4294,7 +5201,7 @@ def admin_panel():
                     <th>Username</th>
                     <th>Tier</th>
                     <th>Swaps</th>
-                    <th>Credits</th>
+                    <th>Vouch</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
@@ -4327,7 +5234,7 @@ def admin_tab(tab_name):
         if tab_name == 'users':
             users = execute_query('''
                 SELECT user_id, username, first_name, tier, approved, is_banned, 
-                       credits, total_swaps, successful_swaps
+                       credits, total_swaps, successful_swaps, vouch_score
                 FROM users 
                 ORDER BY user_id
                 LIMIT 50
@@ -4435,6 +5342,7 @@ def admin_tab(tab_name):
                     <td>@{listing[2]}</td>
                     <td>@{listing[15]}</td>
                     <td>{listing[3]} {listing[4]}</td>
+                    <td>{listing[7].upper()}</td>
                     <td><span class="badge {status_class}">{listing[6]}</span></td>
                     <td>{listing[10]}</td>
                     <td>{listing[11]}</td>
@@ -4450,6 +5358,7 @@ def admin_tab(tab_name):
                         <th>Username</th>
                         <th>Seller</th>
                         <th>Price</th>
+                        <th>Type</th>
                         <th>Status</th>
                         <th>Created</th>
                         <th>Expires</th>
@@ -4535,119 +5444,112 @@ def health():
 def ping1():
     return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
 
-
 # ==================== WHAT TO POST IN CHANNELS ====================
 def post_initial_announcements():
     """Post initial announcements to channels"""
     try:
         # Updates Channel Announcement
         updates_message = """
-🎉 *CARNAGE SWAPPER OFFICIAL LAUNCH!* 🚀
+🎉 *CARNAGE SWAPPER v8.0 OFFICIAL LAUNCH!* 🚀
 
-We are excited to announce the official launch of *CARNAGE Swapper Bot* - the most advanced Instagram username swapping platform!
+We are excited to announce *Version 2.0* of *CARNAGE Swapper Bot* - Now with AUCTION SYSTEM & VOUCH SYSTEM!
 
-*✨ FEATURES:*
+*✨ NEW FEATURES IN v2.0:*
 
-✅ *INSTANT SWAPPING*
-• Real Instagram API integration
-• Session encryption & security
-• Rate limit handling
-• Backup mode & multi-threading
+🎯 *AUCTION SYSTEM*
+• Bid on Instagram usernames
+• Automatic bid increments
+• Buy Now option
+• Fake bid protection (Permanent ban for fake bids)
 
-🛒 *MARKETPLACE*
-• Buy/sell Instagram usernames
+🤝 *VOUCH SYSTEM*
+• Automatic vouch requests after swaps
+• Positive/Negative feedback
+• Vouch score calculation
+• Verified transactions only
+
+🛒 *ENHANCED MARKETPLACE*
+• Fixed price and auction listings
+• Verified seller sessions
 • Real currency only (INR/USDT)
-• Verified seller system
 • Secure escrow transactions
 
-🤝 *MIDDLEMAN SYSTEM*
-• Verified middlemen
-• Dual MM protection (Max 2 per swap)
-• Encrypted session handling
-• Dispute resolution
+🔐 *IMPROVED SECURITY*
+• One middleman per swap system
+• Enhanced session encryption
+• Fake bid detection
+• Permanent ban for rule violations
 
-📊 *USER DASHBOARD*
-• Personal statistics
-• Achievement system
-• Referral program
-• Real-time tracking
-
-🔐 *SECURITY*
-• End-to-end encryption
-• Session verification
-• Anti-fraud measures
-• Secure payment handling
+📊 *USER REPUTATION*
+• Vouch scores displayed
+• Transaction history
+• Trust levels
 
 *🚀 GET STARTED:*
 1. Start the bot: @CarnageSwapperBot
 2. Join our channels (required)
 3. Get approved (instant via referral)
-4. Start swapping or selling!
+4. Start swapping, selling, or bidding!
 
-*📢 IMPORTANT LINKS:*
-• Bot: @CarnageSwapperBot
-• Proofs: @CarnageProofs
-• Support: @CARNAGEV1
+*⚠️ IMPORTANT RULES:*
+• Fake bids = PERMANENT BAN
+• Always use middleman for transactions
+• Real currency only in marketplace
+• Verify sellers before buying
 
 *🎁 REFERRAL PROGRAM:*
 Refer friends and earn FREE swaps! 2 swaps per referral!
 
-*⚠️ DISCLAIMER:*
-• Use at your own risk
-• Follow Instagram TOS
-• No illegal activities
-
-*Welcome to the future of username swapping!* 🔥
+*Welcome to the most advanced username swapping platform!* 🔥
 """
         
         # Marketplace Channel Announcement
         marketplace_message = """
-🛒 *CARNAGE MARKETPLACE - NOW OPEN!* 💰
+🛒 *CARNAGE MARKETPLACE v2.0 - NOW WITH AUCTIONS!* 💰
 
-Welcome to the official CARNAGE Marketplace for buying and selling Instagram usernames!
+Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
+
+*🎯 NEW AUCTION FEATURES:*
+• Bid on Instagram usernames
+• Automatic bid increments
+• Buy Now option available
+• 24-hour auction duration
+• Real-time bid notifications
+
+*💰 SALE TYPES AVAILABLE:*
+1. *Fixed Price* - Set your price
+2. *Auction* - Accept bids for 24 hours
+3. *Buy Now + Auction* - Set buy now price + accept bids
+
+*⚠️ AUCTION RULES:*
+• Minimum bid increments apply
+• Fake bids = PERMANENT BAN
+• Auction winner must complete purchase
+• Buy Now ends auction immediately
+
+*🤝 VOUCH SYSTEM:*
+• Automatic vouch requests after swaps
+• Build your reputation
+• Vouch scores displayed on listings
+• Trusted sellers get badges
 
 *📋 HOW TO SELL:*
-1. Use `/sell` command in bot DM
-2. Provide username & price
-3. Verify ownership with session
+1. Use `/sell` command
+2. Choose sale type (Fixed/Auction/Buy Now)
+3. Set price and verify ownership
 4. Your listing goes live instantly!
 
-*🛍️ HOW TO BUY:*
+*🛍️ HOW TO BUY/BID:*
 1. Browse with `/marketplace`
-2. Find desired username
-3. Contact middleman with Listing ID
-4. Complete secure transaction
+2. Click on listing to view details
+3. Place bid or buy now
+4. Contact middleman to complete
 
 *💰 PAYMENT METHODS:*
-• Indian Rupees (INR) - UPI/Bank Transfer
-• USDT Crypto (TRC20/ERC20)
+• Indian Rupees (INR) - UPI/Bank Transfer/QR
+•  Crypto (Ltc,Btc,Eth,etc...)
 
-*⚖️ MARKETPLACE RULES:*
-1. Real currency only (No credits)
-2. Minimum price: ₹1000 or $10 USDT
-3. Verified seller sessions required
-4. Middleman escrow for all transactions
-5. No blacklisted usernames
-
-*🤝 MIDDLEMAN PROTECTION:*
-• Maximum 2 middlemen per swap
-• Encrypted session handling
-• Dual approval for release/refund
-• 24/7 dispute resolution
-
-*📈 LISTING FEATURES:*
-• 30-day active listings
-• Price negotiation support
-• Seller verification badges
-• Bidding system (coming soon)
-
-*⚠️ IMPORTANT:*
-• Always use middleman for transactions
-• Never send payment directly
-• Verify seller verification status
-• Report suspicious listings
-
-*Start listing or browsing now with @CarnageSwapperBot!* 🚀
+*Start listing or bidding now with @CarnageSwapperBot!* 🚀
 
 *Need help?* Contact @CARNAGEV1
 """
@@ -4693,19 +5595,26 @@ def main():
     print("🔧 Initializing database with encryption...")
     init_database()
     
+    # Start auction checker thread
+    auction_thread = threading.Thread(target=auction_checker_thread, daemon=True)
+    auction_thread.start()
+    
     print("✅ Database initialized successfully")
-    print("🚀 CARNAGE Swapper Bot v7.0 - PRODUCTION READY")
+    print("🚀 CARNAGE Swapper Bot v8.0 - PRODUCTION READY")
     print(f"👑 Admin ID: {ADMIN_USER_ID}")
     print(f"🤖 Bot Username: @{BOT_USERNAME}")
     print(f"📢 Updates Channel: {CHANNELS['updates']['id']}")
     print(f"✅ Proofs Channel: {CHANNELS['proofs']['id']}")
     print(f"🛒 Marketplace Channel: {MARKETPLACE_CHANNEL_ID}")
     print(f"👥 Admin Group: {ADMIN_GROUP_ID}")
-    print("✨ Features: COMPLETE MARKETPLACE WITH ESCROW")
+    print("✨ Features: COMPLETE MARKETPLACE WITH AUCTION & VOUCH SYSTEM")
     print("🔐 Session Encryption: All sessions encrypted at rest")
+    print("🎯 Auction System: Bid on usernames with Buy Now option")
+    print("🤝 Vouch System: User reputation with automatic vouch requests")
     print("💰 Marketplace: Real money only (INR/USDT)")
-    print("🤝 Middleman System: Secure escrow transactions (Max 2 MMs per swap)")
+    print("⚖️ One Middleman System: Simplified escrow transactions")
     print("📊 HTML Dashboard & Admin Panel")
+    print("🚫 Fake Bid Protection: Permanent ban for fake bids")
     
     # Post initial announcements
     print("📢 Posting initial announcements to channels...")
@@ -4724,6 +5633,8 @@ def main():
     print("• Middleman Commands: GROUP ONLY")
     print("• Admin Commands: DM ONLY")
     print("• Marketplace: Real currency only")
+    print("• Auction System: Bidding with Buy Now option")
+    print("• Vouch System: Automatic reputation building")
     print("• Session Verification: Required for sellers")
     
     print("\n🔗 **URLS:**")
@@ -4731,14 +5642,17 @@ def main():
     print(f"• Admin Panel: https://separate-genny-1carnage1-2b4c603c.koyeb.app/admin?auth=carnage123")
     
     print("\n✅ **PRODUCTION READY WITH ALL FEATURES!**")
-    print("\n📋 **ADDED FEATURES:**")
-    print("1. /unban command - Unban users")
-    print("2. /bannedusers - Show banned users with inline buttons")
-    print("3. Admin notifications for new users")
-    print("4. /joinswap command - MMs can join swaps (max 2 per swap)")
-    print("5. Fixed /sell command with proper validation")
-    print("6. Channel announcements ready")
-    print("7. Dual MM system with max 2 MMs per swap")
+    print("\n📋 **ADDED FEATURES IN v8.0:**")
+    print("1. ✅ Auction System - Bid on usernames")
+    print("2. ✅ Vouch System - User reputation")
+    print("3. ✅ Fixed /sell command with inline menus")
+    print("4. ✅ Fixed /marketplace with inline buttons")
+    print("5. ✅ Buy Now option for auctions")
+    print("6. ✅ Fake bid protection (Permanent ban)")
+    print("7. ✅ Automatic vouch requests after swaps")
+    print("8. ✅ One middleman per swap system")
+    print("9. ✅ Vouch scores in marketplace listings")
+    print("10. ✅ Auction ending checker (background thread)")
     
     try:
         while True:
