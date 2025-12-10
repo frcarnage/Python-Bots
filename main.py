@@ -45,7 +45,7 @@ ENCRYPTION_KEY = get_encryption_key()
 cipher = Fernet(ENCRYPTION_KEY)
 
 # Instagram API Configuration
-DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
+DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/13588761041/-5MqmNYtm71bGnyH7Q5uxOcX"
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
 
 # ======= CHANNEL CONFIGURATION =======
@@ -3497,8 +3497,12 @@ def refund_command(message):
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 # ==================== MESSAGE HANDLERS ====================
+def handle_tutorial_response(chat_id, text):
+    """Handle tutorial responses"""
+    pass
+
 @bot.message_handler(func=lambda message: message.chat.type == 'private')
-def handle_private_messages(message):
+def handle_all_private_messages(message):
     """Handle all text messages in private chat"""
     user_id = message.chat.id
     text = message.text
@@ -3626,39 +3630,41 @@ def handle_selling_state(user_id, text):
     elif state["step"] == "get_session":
         session_id = text.strip()
         
+        # Create listing first
+        success, listing_id = create_marketplace_listing(
+            user_id,
+            state["username"],
+            state["price"],
+            state["currency"],
+            "sale",
+            state["description"]
+        )
+        
+        if not success:
+            bot.send_message(user_id, f"❌ Failed to create listing: {listing_id}")
+            del user_states[user_id]
+            return
+        
+        state["listing_id"] = listing_id
+        
         # Verify session
-        success, result = verify_seller_session(user_id, state.get("listing_id", ""), session_id)
+        success, result = verify_seller_session(user_id, listing_id, session_id)
         
         if success:
-            # Create listing
-            success, listing_id = create_marketplace_listing(
-                user_id,
-                state["username"],
-                state["price"],
-                state["currency"],
-                "sale",
-                state["description"]
-            )
+            # Store session
+            save_session_to_db(user_id, "marketplace_seller", session_id, listing_id)
             
-            if success:
-                state["listing_id"] = listing_id
-                
-                # Store session
-                save_session_to_db(user_id, "marketplace_seller", session_id, listing_id)
-                
-                bot.send_message(
-                    user_id,
-                    f"✅ *Listing Created Successfully!*\n\n"
-                    f"Username: @{state['username']}\n"
-                    f"Price: {state['price']} {state['currency']}\n"
-                    f"Listing ID: `{listing_id}`\n\n"
-                    f"*Your listing is now active in marketplace!*\n"
-                    f"View it with /marketplace\n\n"
-                    f"*Note:* When someone buys, middleman will contact you for session.",
-                    parse_mode="Markdown"
-                )
-            else:
-                bot.send_message(user_id, f"❌ Failed to create listing: {listing_id}")
+            bot.send_message(
+                user_id,
+                f"✅ *Listing Created Successfully!*\n\n"
+                f"Username: @{state['username']}\n"
+                f"Price: {state['price']} {state['currency']}\n"
+                f"Listing ID: `{listing_id}`\n\n"
+                f"*Your listing is now active in marketplace!*\n"
+                f"View it with /marketplace\n\n"
+                f"*Note:* When someone buys, middleman will contact you for session.",
+                parse_mode="Markdown"
+            )
         else:
             bot.send_message(user_id, f"❌ Verification failed: {result}\n\nPlease send valid session ID:")
             return
@@ -3729,65 +3735,54 @@ def callback_handler(call):
             bot.answer_callback_query(call.id)
             
         elif data.startswith("view_listing_"):
-    listing_id = data.split("_")[2]
-    listing = execute_one('''
-        SELECT ml.*, u.username as seller_username, u.tier as seller_tier
-        FROM marketplace_listings ml
-        JOIN users u ON ml.seller_id = u.user_id
-        WHERE ml.listing_id = ?
-    ''', (listing_id,))
-    
-    if not listing:
-        bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
-        return
-    
-    # This line and everything below needs to be indented at the same level
-    currency_symbol = "💲"
-    if listing["currency"] == "inr":
-        price_text = f"₹{listing['price']}"
-    elif listing["currency"] == "usdt":
-        price_text = f"${listing['price']} USDT"
-    else:
-        price_text = f"{listing['price']} {listing['currency']}"
-    
-    # ... rest of the code ...
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}")
-    )
-    
-    if listing.get('seller_username'):
-        markup.add(InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}"))
-    else:
-        markup.add(InlineKeyboardButton("📞 Contact Seller", callback_data="no_seller"))
-    
-    markup.add(InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace"))
-    
-    verified_text = "✅ Verified" if listing.get("seller_session_encrypted") else "❌ Not Verified"
-    
-    response = (
-        f"🔍 *Listing Details*\n\n"
-        f"*Username:* `{listing['username']}`\n"
-        f"*Price:* {currency_symbol} {price_text}\n"
-        f"*Seller:* @{listing.get('seller_username', 'User')}\n"
-        f"*Seller Tier:* {listing.get('seller_tier', 'free').upper()}\n"
-        f"*Verification:* {verified_text}\n"
-        f"*Status:* {listing.get('status', 'unknown').capitalize()}\n\n"
-        f"*Description:* {listing.get('description', 'No description')}\n\n"
-        f"*Listing ID:* `{listing_id}`\n"
-        f"*Created:* {listing.get('created_at', 'N/A')[:10]}\n"
-        f"*Expires:* {listing.get('expires_at', 'N/A')[:10]}"
-    )
-    
-    bot.edit_message_text(
-        response,
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
-else:
-    bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
+            listing_id = data.split("_")[2]
+            listing = execute_one('''
+                SELECT ml.*, u.username as seller_username, u.tier as seller_tier
+                FROM marketplace_listings ml
+                JOIN users u ON ml.seller_id = u.user_id
+                WHERE ml.listing_id = ?
+            ''', (listing_id,))
+            
+            if listing:
+                currency_symbol = "💲"
+                if listing["currency"] == "inr":
+                    price_text = f"₹{listing['price']}"
+                elif listing["currency"] == "usdt":
+                    price_text = f"${listing['price']} USDT"
+                else:
+                    price_text = f"{listing['price']} {listing['currency']}"
+                
+                markup = InlineKeyboardMarkup(row_width=2)
+                contact_button_url = f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}"
+                markup.add(
+                    InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}"),
+                    InlineKeyboardButton("📞 Contact Seller", url=contact_button_url),
+                    InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace")
+                )
+                
+                verified_text = "✅ Verified" if listing["seller_session_encrypted"] else "❌ Not Verified"
+                
+                response = (
+                    f"🔍 *Listing Details*\n\n"
+                    f"*Username:* `{listing['username']}`\n"
+                    f"*Price:* {currency_symbol} {price_text}\n"
+                    f"*Seller:* @{listing['seller_username'] or 'User'}\n"
+                    f"*Seller Tier:* {listing['seller_tier'].upper()}\n"
+                    f"*Verification:* {verified_text}\n"
+                    f"*Status:* {listing['status'].capitalize()}\n\n"
+                    f"*Description:* {listing['description'] or 'No description'}\n\n"
+                    f"*Listing ID:* `{listing_id}`\n"
+                    f"*Created:* {listing['created_at'][:10]}\n"
+                    f"*Expires:* {listing['expires_at'][:10]}"
+                )
+                
+                bot.edit_message_text(
+                    response,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
             
         elif data.startswith("buy_"):
             listing_id = data.split("_")[1]
