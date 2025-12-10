@@ -3729,15 +3729,19 @@ def callback_handler(call):
             bot.answer_callback_query(call.id)
             
         elif data.startswith("view_listing_"):
-            listing_id = data.split("_")[2]
-            listing = execute_one('''
-                SELECT ml.*, u.username as seller_username, u.tier as seller_tier
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.listing_id = ?
-            ''', (listing_id,))
-            
-            if listing:
+    listing_id = data.split("_")[2]
+    listing = execute_one('''
+        SELECT ml.*, u.username as seller_username, u.tier as seller_tier
+        FROM marketplace_listings ml
+        JOIN users u ON ml.seller_id = u.user_id
+        WHERE ml.listing_id = ?
+    ''', (listing_id,))
+    
+    if not listing:
+        bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
+        return
+    
+    # This line and everything below needs to be indented at the same level
     currency_symbol = "💲"
     if listing["currency"] == "inr":
         price_text = f"₹{listing['price']}"
@@ -3746,6 +3750,7 @@ def callback_handler(call):
     else:
         price_text = f"{listing['price']} {listing['currency']}"
     
+    # ... rest of the code ...
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}")
