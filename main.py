@@ -3738,49 +3738,51 @@ def callback_handler(call):
             ''', (listing_id,))
             
             if listing:
-                currency_symbol = "💲"
-                if listing["currency"] == "inr":
-                    price_text = f"₹{listing['price']}"
-                elif listing["currency"] == "usdt":
-                    price_text = f"${listing['price']} USDT"
-                else:
-                    price_text = f"{listing['price']} {listing['currency']}"
-                
-                markup = InlineKeyboardMarkup(row_width=2)
-markup.add(
-    InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}")
-)
-
-if listing['seller_username']:
-    markup.add(InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}"))
-else:
-    markup.add(InlineKeyboardButton("📞 Contact Seller", callback_data="no_seller"))
+    currency_symbol = "💲"
+    if listing["currency"] == "inr":
+        price_text = f"₹{listing['price']}"
+    elif listing["currency"] == "usdt":
+        price_text = f"${listing['price']} USDT"
+    else:
+        price_text = f"{listing['price']} {listing['currency']}"
     
-markup.add(InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace"))
-                
-                verified_text = "✅ Verified" if listing["seller_session_encrypted"] else "❌ Not Verified"
-                
-                response = (
-                    f"🔍 *Listing Details*\n\n"
-                    f"*Username:* `{listing['username']}`\n"
-                    f"*Price:* {currency_symbol} {price_text}\n"
-                    f"*Seller:* @{listing['seller_username'] or 'User'}\n"
-                    f"*Seller Tier:* {listing['seller_tier'].upper()}\n"
-                    f"*Verification:* {verified_text}\n"
-                    f"*Status:* {listing['status'].capitalize()}\n\n"
-                    f"*Description:* {listing['description'] or 'No description'}\n\n"
-                    f"*Listing ID:* `{listing_id}`\n"
-                    f"*Created:* {listing['created_at'][:10]}\n"
-                    f"*Expires:* {listing['expires_at'][:10]}"
-                )
-                
-                bot.edit_message_text(
-                    response,
-                    call.message.chat.id,
-                    call.message.message_id,
-                    parse_mode="Markdown",
-                    reply_markup=markup
-                )
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🛒 Contact MM to Buy", url=f"https://t.me/{BOT_USERNAME}")
+    )
+    
+    if listing.get('seller_username'):
+        markup.add(InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}"))
+    else:
+        markup.add(InlineKeyboardButton("📞 Contact Seller", callback_data="no_seller"))
+    
+    markup.add(InlineKeyboardButton("🔙 Back", callback_data="refresh_marketplace"))
+    
+    verified_text = "✅ Verified" if listing.get("seller_session_encrypted") else "❌ Not Verified"
+    
+    response = (
+        f"🔍 *Listing Details*\n\n"
+        f"*Username:* `{listing['username']}`\n"
+        f"*Price:* {currency_symbol} {price_text}\n"
+        f"*Seller:* @{listing.get('seller_username', 'User')}\n"
+        f"*Seller Tier:* {listing.get('seller_tier', 'free').upper()}\n"
+        f"*Verification:* {verified_text}\n"
+        f"*Status:* {listing.get('status', 'unknown').capitalize()}\n\n"
+        f"*Description:* {listing.get('description', 'No description')}\n\n"
+        f"*Listing ID:* `{listing_id}`\n"
+        f"*Created:* {listing.get('created_at', 'N/A')[:10]}\n"
+        f"*Expires:* {listing.get('expires_at', 'N/A')[:10]}"
+    )
+    
+    bot.edit_message_text(
+        response,
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+else:
+    bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
             
         elif data.startswith("buy_"):
             listing_id = data.split("_")[1]
