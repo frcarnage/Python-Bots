@@ -1,3 +1,4 @@
+# reset.py - Instagram Password Reset Bot
 import json
 from uuid import uuid4
 import requests
@@ -11,25 +12,25 @@ import time
 from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-from telegram.error import TelegramError
 import os
 from datetime import datetime
 
-# Initialize Flask app for health checks
-app = Flask(__name__)
+# ========== CONFIGURATION ==========
+# Use a different port than main.py (8000)
+RESET_BOT_PORT = 5001  # Different from main.py's port 8000
+RESET_BOT_TOKEN = "8522048948:AAH4DVdoM63rhxmiqRtpl_z2O0Lk6w7L3uo"
 
-# Bot token
-TOKEN = "8522048948:AAH4DVdoM63rhxmiqRtpl_z2O0Lk6w7L3uo"
-PORT = int(os.environ.get('PORT', 5000))
+# ========== FLASK APP ==========
+reset_app = Flask(__name__)
 
-# Enable logging
+# ========== LOGGING ==========
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Global variable to track bot status
+# ========== GLOBAL STATE ==========
 bot_status = {
     "started": False,
     "last_poll": None,
@@ -43,9 +44,10 @@ bot_status = {
     "failed_logins": 0
 }
 
-# States for login conversation
+# ========== CONVERSATION STATES ==========
 USERNAME, PASSWORD = range(2)
 
+# ========== INSTAGRAM API FUNCTIONS ==========
 def generate_device_id(username):
     """Generate a consistent device ID based on username"""
     seed = f"android-{username}"
@@ -54,7 +56,6 @@ def generate_device_id(username):
 
 def generate_signature(data):
     """Generate Instagram signature (simplified version)"""
-    # Note: This is a simplified version. Instagram's actual signature is more complex
     key = b'7d891af0aadc89a7eaa2e9e5c3f7a8c9'
     h = hmac.new(key, data.encode(), hashlib.sha256)
     return base64.b64encode(h.digest()).decode()
@@ -68,13 +69,9 @@ def instagram_login(username, password):
         # Generate device ID
         device_id = generate_device_id(username)
         
-        # Generate a phone ID
+        # Generate IDs
         phone_id = str(uuid4())
-        
-        # Generate a GUID
         guid = str(uuid4())
-        
-        # Current timestamp
         ts = int(time.time())
         
         # Headers for login
@@ -111,8 +108,6 @@ def instagram_login(username, password):
         # Create signature
         sig_data = json.dumps(login_data, separators=(',', ':'))
         signature = generate_signature(sig_data)
-        
-        # Add signature to data
         signed_body = f'signed_body={signature}.{sig_data}&ig_sig_key_version=4'
         
         # Send login request
@@ -131,7 +126,6 @@ def instagram_login(username, password):
                 username = result['logged_in_user']['username']
                 full_name = result['logged_in_user']['full_name']
                 
-                # Extract session cookies
                 session_data = {
                     'user_id': user_id,
                     'username': username,
@@ -240,6 +234,7 @@ def send_instagram_password_reset(query: str):
     except Exception as ex:
         return False, f"Request failed: {str(ex)}"
 
+# ========== TELEGRAM BOT HANDLERS ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a welcome message when the command /start is issued."""
     welcome_text = """
@@ -294,10 +289,9 @@ Just send any Instagram username or email
 async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start the login conversation"""
     await update.message.reply_text(
-        "🔐 *Instagram Login Check*\n\n"
+        "🔐 Instagram Login Check\n\n"
         "Please enter the Instagram username:\n"
-        "(Type /cancel to stop)",
-        parse_mode='Markdown'
+        "(Type /cancel to stop)"
     )
     return USERNAME
 
@@ -305,7 +299,6 @@ async def login_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Store username and ask for password"""
     username = update.message.text.strip()
     
-    # Basic validation
     if len(username) < 3:
         await update.message.reply_text(
             "❌ Username is too short. Please enter a valid Instagram username:"
@@ -371,11 +364,9 @@ async def login_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel the login conversation"""
     await update.message.reply_text(
         "❌ Login process cancelled.\n"
-        "No credentials were stored.",
-        reply_markup=None
+        "No credentials were stored."
     )
     
-    # Clear stored data
     if 'login_username' in context.user_data:
         del context.user_data['login_username']
     
@@ -414,8 +405,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Successful: {bot_status["successful_logins"]}
 • Failed: {bot_status["failed_logins"]}
 • Success Rate: {bot_status["successful_logins"]/bot_status["login_attempts"]*100 if bot_status["login_attempts"] > 0 else 0:.1f}%
-
-🏓 Health Check: https://your-koyeb-app.koyeb.app/health
 """
     await update.message.reply_text(status_text)
 
@@ -423,7 +412,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages - treat them as usernames/emails for password reset"""
     user_input = update.message.text.strip()
     
-    # Check if message is a command
     if user_input.startswith('/'):
         return
     
@@ -479,26 +467,19 @@ Try again with a different username/email.
     except:
         pass
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Log Errors caused by Updates."""
-    logger.warning('Update "%s" caused error "%s"', update, context.error)
-
-@app.route('/')
+# ========== FLASK ENDPOINTS ==========
+@reset_app.route('/')
 def home():
     """Home page with bot info"""
     return jsonify({
         "status": "running",
         "service": "Instagram Password Reset & Login Bot",
         "version": "2.0",
-        "features": ["password_reset", "login_check"],
-        "endpoints": {
-            "/": "This page",
-            "/health": "Health check endpoint",
-            "/stats": "Bot statistics"
-        }
+        "port": RESET_BOT_PORT,
+        "features": ["password_reset", "login_check"]
     })
 
-@app.route('/health/reset')
+@reset_app.route('/health/reset')
 def health_check():
     """Health check endpoint for uptime monitoring"""
     bot_status["last_poll"] = datetime.now()
@@ -508,6 +489,7 @@ def health_check():
         return jsonify({
             "status": "healthy",
             "bot_running": True,
+            "port": RESET_BOT_PORT,
             "uptime_seconds": uptime_seconds,
             "last_poll": bot_status["last_poll"].isoformat(),
             "features_active": {
@@ -523,7 +505,7 @@ def health_check():
             "timestamp": datetime.now().isoformat()
         }), 503
 
-@app.route('/stats/reset')
+@reset_app.route('/stats/reset')
 def stats():
     """Bot statistics endpoint"""
     return jsonify({
@@ -539,10 +521,11 @@ def stats():
         "last_poll": bot_status["last_poll"].isoformat() if bot_status["last_poll"] else None
     })
 
-async def run_bot():
+# ========== BOT RUNNER FUNCTIONS ==========
+async def run_telegram_bot():
     """Run the Telegram bot"""
     # Create the Application
-    application = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(RESET_BOT_TOKEN).build()
 
     # Create login conversation handler
     login_handler = ConversationHandler(
@@ -560,26 +543,27 @@ async def run_bot():
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(login_handler)
     
-    # Add message handler - handle all text messages as username/email inputs
+    # Add message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Add error handler
-    application.add_error_handler(error_handler)
 
     # Start the Bot
-    print("🤖 Instagram Password Reset & Login Bot is starting...")
-    print("📱 Send /start to begin")
-    print(f"🏓 Health check: http://localhost:{PORT}/health")
+    print("=" * 50)
+    print("🤖 Instagram Password Reset & Login Bot")
+    print("=" * 50)
+    print(f"🔑 Token: {RESET_BOT_TOKEN[:10]}...")
+    print(f"🏓 Health: http://localhost:{RESET_BOT_PORT}/health/reset")
+    print(f"📊 Stats: http://localhost:{RESET_BOT_PORT}/stats/reset")
     print("🔐 Login feature: /login")
+    print("=" * 50)
     
     bot_status["started"] = datetime.now()
     
-    # Start polling with more frequent updates to prevent sleep
+    # Start polling
     await application.initialize()
     await application.start()
     await application.updater.start_polling(
-        poll_interval=1.0,  # More frequent polling
-        timeout=10,
+        poll_interval=2.0,  # 2-second polling interval
+        timeout=20,
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES
     )
@@ -587,20 +571,31 @@ async def run_bot():
     # Keep the bot running
     await application.updater.idle()
 
-def run_flask():
-    """Run Flask web server"""
-    app.run(host='0.0.0.0', port=PORT)
+def run_flask_server():
+    """Run Flask web server on port 5001"""
+    print(f"🌐 Starting Flask server on port {RESET_BOT_PORT}")
+    reset_app.run(
+        host='0.0.0.0', 
+        port=RESET_BOT_PORT, 
+        debug=False, 
+        use_reloader=False,
+        threaded=True
+    )
 
-def main():
-    """Start both Flask server and Telegram bot"""
-    print("🚀 Starting Instagram Password Reset & Login Bot with 24/7 hosting...")
-    
+def run_bot_with_flask():
+    """Run both Telegram bot and Flask server"""
     # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
     flask_thread.start()
     
     # Run Telegram bot in main thread
-    asyncio.run(run_bot())
+    asyncio.run(run_telegram_bot())
 
+# ========== MAIN ENTRY POINT ==========
 if __name__ == '__main__':
-    main()
+    print("🚀 Starting Instagram Password Reset Bot...")
+    print(f"📡 Using port: {RESET_BOT_PORT}")
+    print(f"🤖 Token: {RESET_BOT_TOKEN[:10]}...")
+    
+    # Run the bot
+    run_bot_with_flask()
