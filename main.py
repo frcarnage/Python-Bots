@@ -86,6 +86,7 @@ swap_sessions = {}
 active_listings = {}
 bidding_sessions = {}
 vouch_requests = {}
+bulk_listings = {}
 
 # Database connection pool
 db_lock = threading.Lock()
@@ -344,8 +345,8 @@ HTML_TEMPLATES = {
                 
                 <div class="stat-card">
                     <div class="stat-icon"><i class="fas fa-coins"></i></div>
-                    <div class="stat-title">Free Swaps</div>
-                    <div class="stat-value">{free_swaps}</div>
+                    <div class="stat-title">Credits Balance</div>
+                    <div class="stat-value">{credits} 🪙</div>
                 </div>
                 
                 <div class="stat-card">
@@ -658,6 +659,9 @@ HTML_TEMPLATES = {
                 <div class="tab" onclick="showTab('system')">
                     <i class="fas fa-cog"></i> System
                 </div>
+                <div class="tab" onclick="showTab('broadcast')">
+                    <i class="fas fa-bullhorn"></i> Broadcast
+                </div>
             </div>
             
             <div class="content" id="content">
@@ -705,6 +709,29 @@ HTML_TEMPLATES = {
                         showTab('users');
                     }});
                 }}
+            }}
+            
+            function sendBroadcast() {{
+                const message = document.getElementById('broadcastMessage').value;
+                if (!message) {{
+                    alert('Please enter a message');
+                    return;
+                }}
+                
+                if (!confirm('Are you sure you want to send this broadcast to ALL users?')) {{
+                    return;
+                }}
+                
+                fetch('/admin/broadcast', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{message: message}})
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    alert(data.message);
+                    document.getElementById('broadcastMessage').value = '';
+                }});
             }}
             
             // Load initial content
@@ -844,6 +871,7 @@ def init_database():
                     status TEXT,
                     swap_time TEXT,
                     error_message TEXT,
+                    credits_spent INTEGER DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
@@ -886,7 +914,24 @@ def init_database():
                     min_increment REAL DEFAULT 100,
                     current_bid REAL DEFAULT 0,
                     buy_now_price REAL DEFAULT 0,
+                    verified_session INTEGER DEFAULT 0,
                     FOREIGN KEY (seller_id) REFERENCES users (user_id)
+                )
+            ''')
+            
+            # Bulk listings
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bulk_listings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    batch_id TEXT,
+                    usernames TEXT,
+                    sessions TEXT,
+                    prices TEXT,
+                    status TEXT DEFAULT 'processing',
+                    created_at TEXT,
+                    completed_at TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
             
@@ -1428,14 +1473,47 @@ def get_total_users():
 
 def log_swap(user_id, target_username, status, error_message=None):
     """Log swap attempt to history"""
+    # Check if user has enough credits
+    user_credits = get_user_credits(user_id)
+    if user_credits < 10 and status != "success":
+        return False
+    
+    # Deduct 10 credits for swap attempt
+    if status != "success":
+        if not deduct_credits(user_id, 10):
+            return False
+    
     execute_query('''
-        INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message), commit=True)
+        INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message, credits_spent)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message, 10), commit=True)
     
     execute_query("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,), commit=True)
     if status == "success":
         execute_query("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,), commit=True)
+    
+    return True
+
+def get_user_credits(user_id):
+    """Get user's credits balance"""
+    result = execute_one("SELECT credits FROM users WHERE user_id = ?", (user_id,))
+    return result[0] if result else 0
+
+def deduct_credits(user_id, amount):
+    """Deduct credits from user"""
+    current_credits = get_user_credits(user_id)
+    if current_credits < amount:
+        return False
+    
+    execute_query("UPDATE users SET credits = credits - ? WHERE user_id = ?", 
+                  (amount, user_id), commit=True)
+    return True
+
+def add_credits(user_id, amount):
+    """Add credits to user"""
+    execute_query("UPDATE users SET credits = credits + ? WHERE user_id = ?", 
+                  (amount, user_id), commit=True)
+    return True
 
 def get_user_detailed_stats(user_id):
     """Get detailed user statistics"""
@@ -1494,6 +1572,78 @@ def get_user_detailed_stats(user_id):
         "achievements": achievements
     }
 
+# ==================== BROADCAST FUNCTION ====================
+@bot.message_handler(commands=['broadcast'])
+def broadcast_command(message):
+    """Broadcast message to all users - ADMIN ONLY"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        bot.reply_to(message, "❌ Admin only command")
+        return
+    
+    try:
+        # Extract message text
+        parts = message.text.split(' ', 1)
+        if len(parts) < 2:
+            bot.reply_to(message, "Usage: /broadcast <message>\n\nExample: /broadcast New update available!")
+            return
+        
+        broadcast_message = parts[1]
+        
+        # Ask for confirmation
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ Yes, Send to All", callback_data=f"confirm_broadcast_{hashlib.md5(broadcast_message.encode()).hexdigest()}"),
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")
+        )
+        
+        bot.send_message(
+            user_id,
+            f"📢 *Confirm Broadcast*\n\n"
+            f"Message: {broadcast_message}\n\n"
+            f"⚠️ This will be sent to ALL users. Are you sure?",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
+
+def send_broadcast_to_all(message_text, from_user_id):
+    """Send broadcast message to all users"""
+    try:
+        # Get all user IDs
+        users = execute_query("SELECT user_id FROM users WHERE is_banned = 0")
+        
+        if not users:
+            return 0, "No users found"
+        
+        sent_count = 0
+        failed_count = 0
+        
+        for user in users:
+            user_id = user[0]
+            try:
+                bot.send_message(
+                    user_id,
+                    f"📢 *ANNOUNCEMENT FROM CARNAGE*\n\n{message_text}\n\n",
+                    parse_mode="Markdown"
+                )
+                sent_count += 1
+                time.sleep(0.1)  # Prevent rate limiting
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to send to {user_id}: {e}")
+        
+        return sent_count, failed_count
+        
+    except Exception as e:
+        return 0, str(e)
+
 # ==================== REFERRAL SYSTEM ====================
 def process_referral(user_id, referral_code):
     """Process referral when new user joins"""
@@ -1516,6 +1666,9 @@ def process_referral(user_id, referral_code):
             WHERE user_id = ?
         ''', (referrer_id,), commit=True)
         
+        # Give 20 extra credits to referrer
+        add_credits(referrer_id, 20)
+        
         # Auto-approve referred user
         execute_query("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
                      (user_id,), commit=True)
@@ -1532,6 +1685,7 @@ def process_referral(user_id, referral_code):
                 f"🎉 *New Referral!*\n\n"
                 f"Someone joined using your referral link!\n"
                 f"• You earned: **2 FREE swaps** 🆓\n"
+                f"• You earned: **20 credits** 🪙\n"
                 f"• Total referrals: {get_user_referrals_count(referrer_id)}\n"
                 f"• Total free swaps earned: {get_user_free_swaps(referrer_id)}\n\n"
                 f"Keep sharing your link for more rewards!",
@@ -1625,6 +1779,9 @@ def show_main_menu(chat_id):
         bot.send_message(chat_id, "⏳ *Your account is pending approval.*", parse_mode="Markdown")
         return
     
+    # Check credits balance
+    credits = get_user_credits(chat_id)
+    
     buttons = [
         "📱 Main Session", "🎯 Target Session",
         "🔄 Swapper", "⚙️ Settings",
@@ -1633,16 +1790,18 @@ def show_main_menu(chat_id):
         "🛒 Marketplace"
     ]
     markup = create_reply_menu(buttons, row_width=2, add_back=False)
-    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*", parse_mode='Markdown', reply_markup=markup)
+    welcome_msg = f"🤖 *CARNAGE Swapper - Main Menu*\n\n💰 Credits Balance: `{credits}` 🪙\n*Note:* Each swap costs 10 credits\n\nUse the buttons below or type /help for commands."
+    bot.send_message(chat_id, welcome_msg, parse_mode='Markdown', reply_markup=markup)
 
 def show_swapper_menu(chat_id):
     """Show swapper menu"""
     if not is_user_approved(chat_id):
         return
     
+    credits = get_user_credits(chat_id)
     buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap", "Back"]
     markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>🔄 CARNAGE Swapper - Select Option</b>", parse_mode='HTML', reply_markup=markup)
+    bot.send_message(chat_id, f"<b>🔄 CARNAGE Swapper - Select Option</b>\n\n💰 Credits: {credits} 🪙\n⚡ Each swap costs 10 credits", parse_mode='HTML', reply_markup=markup)
 
 def show_settings_menu(chat_id):
     """Show settings menu"""
@@ -1678,6 +1837,7 @@ def refreshbot_command(message):
         pending_swaps.clear()
         bidding_sessions.clear()
         vouch_requests.clear()
+        bulk_listings.clear()
         
         # Reinitialize database connection
         init_database()
@@ -1747,6 +1907,10 @@ def botstatus_command(message):
         total_swaps = execute_one("SELECT COUNT(*) FROM swap_history")[0] or 0
         successful_swaps = execute_one("SELECT COUNT(*) FROM swap_history WHERE status = 'success'")[0] or 0
         
+        # Credits stats
+        total_credits = execute_one("SELECT SUM(credits) FROM users")[0] or 0
+        credits_spent = execute_one("SELECT SUM(credits_spent) FROM swap_history")[0] or 0
+        
         # Marketplace stats
         active_listings = execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active'")[0] or 0
         active_swaps = execute_one("SELECT COUNT(*) FROM marketplace_swaps WHERE status IN ('created', 'payment_received')")[0] or 0
@@ -1774,6 +1938,11 @@ def botstatus_command(message):
             f"• API Requests: `{requests_count}`\n"
             f"• API Errors: `{errors_count}`\n\n"
             
+            f"*Credits Economy:*\n"
+            f"• Total Credits in Circulation: `{total_credits}`\n"
+            f"• Credits Spent on Swaps: `{credits_spent}`\n"
+            f"• Credits per Swap: `10` 🪙\n\n"
+            
             f"*Marketplace Stats:*\n"
             f"• Active Listings: `{active_listings}`\n"
             f"• Active Swaps: `{active_swaps}`\n"
@@ -1791,6 +1960,7 @@ def botstatus_command(message):
             f"• Pending Swaps: `{len(pending_swaps)}`\n"
             f"• User States: `{len(user_states)}`\n"
             f"• Bidding Sessions: `{len(bidding_sessions)}`\n"
+            f"• Bulk Listings: `{len(bulk_listings)}`\n"
         )
         
         bot.reply_to(message, response, parse_mode="Markdown")
@@ -2092,23 +2262,25 @@ def admin_addcredits(message):
         amount = int(parts[2])
         
         # Add credits
-        execute_query("UPDATE users SET credits = credits + ? WHERE user_id = ?",
-                     (amount, target_id), commit=True)
+        add_credits(target_id, amount)
+        
+        # Get new balance
+        new_balance = get_user_credits(target_id)
         
         # Notify user
         try:
             bot.send_message(
                 target_id,
                 f"🎁 *You received credits!*\n\n"
-                f"Amount: +{amount} credits\n"
-                f"New Balance: {execute_one('SELECT credits FROM users WHERE user_id = ?', (target_id,))[0]} credits\n\n"
+                f"Amount: +{amount} credits 🪙\n"
+                f"New Balance: {new_balance} credits\n\n"
                 f"Use them for swapping or in marketplace!",
                 parse_mode="Markdown"
             )
         except:
             pass
         
-        bot.reply_to(message, f"✅ Added {amount} credits to user {target_id}")
+        bot.reply_to(message, f"✅ Added {amount} credits to user {target_id}. New balance: {new_balance}")
         
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
@@ -2134,6 +2306,9 @@ def admin_stats(message):
         total_swaps = execute_one("SELECT COUNT(*) FROM swap_history")[0]
         successful_swaps = execute_one("SELECT COUNT(*) FROM swap_history WHERE status = 'success'")[0]
         
+        total_credits = execute_one("SELECT SUM(credits) FROM users")[0] or 0
+        credits_spent = execute_one("SELECT SUM(credits_spent) FROM swap_history")[0] or 0
+        
         total_referrals = execute_one("SELECT SUM(total_referrals) FROM users")[0] or 0
         
         # Calculate success rate
@@ -2152,7 +2327,13 @@ def admin_stats(message):
             f"🔄 *Swaps:*\n"
             f"• Total: {total_swaps}\n"
             f"• Successful: {successful_swaps}\n"
-            f"• Success Rate: {success_rate:.1f}%\n\n"
+            f"• Success Rate: {success_rate:.1f}%\n"
+            f"• Credits per Swap: 10 🪙\n\n"
+            
+            f"💰 *Credits Economy:*\n"
+            f"• Total Credits: {total_credits}\n"
+            f"• Credits Spent: {credits_spent}\n"
+            f"• Credits per Referral: 20 🪙\n\n"
             
             f"🎁 *Referrals:*\n"
             f"• Total: {total_referrals}\n"
@@ -2219,7 +2400,7 @@ def start_command(message):
                 user_id,
                 "⏳ *Access pending approval*\n\n"
                 "Contact @CARNAGEV1 or use referral system for instant access!\n"
-                "Tip: Get a friend to refer you for instant approval + 2 FREE swaps! 🎁",
+                "Tip: Get a friend to refer you for instant approval + 2 FREE swaps + 20 credits! 🎁",
                 parse_mode="Markdown"
             )
     else:
@@ -2251,18 +2432,21 @@ def help_command(message):
 /achievements - Your unlocked badges
 /referral - Your referral link
 /vouches - Your vouch profile
+/credits - Check your credits balance
 
 *Swap Features (DM ONLY):*
 • Real Instagram username swapping
 • Working API with rate limit handling
 • Session validation and management
 • Backup mode and threads support
+• *10 credits per swap attempt*
 
 *Marketplace Features (DM ONLY):*
 /marketplace - Browse username listings
 /sell - List username for sale (Real money only)
 /bid - Place bid on auction
 /mybids - View your active bids
+/bulksell - List multiple usernames at once
 
 *Auction System:*
 • Fixed price and auction listings
@@ -2276,6 +2460,12 @@ def help_command(message):
 • Vouch score calculation
 • Verified transactions only
 
+*Credits System:*
+• New users get 100 credits free
+• Each swap attempt costs 10 credits
+• Refer friends for 20 credits each
+• Admins can add credits
+
 *Admin Commands (Admin only - DM ONLY):*
 /users - List all users
 /ban <id> <reason> - Ban user
@@ -2287,6 +2477,7 @@ def help_command(message):
 /ping - Check bot response time
 /botstatus - Detailed bot status
 /refreshbot - Refresh bot caches
+/broadcast <message> - Send message to all users
 
 *Middleman Commands (MM only - GROUP ONLY):*
 /mmhelp - Show MM commands
@@ -2304,7 +2495,7 @@ def help_command(message):
 2. Use /tutorial for step-by-step guide
 3. Add Instagram sessions
 4. Start swapping!
-5. Refer friends for FREE swaps (2 per referral!)
+5. Refer friends for FREE swaps (2 per referral!) + 20 credits each!
 
 *Need Help?*
 Contact: @CARNAGEV1
@@ -2328,6 +2519,32 @@ def dashboard_command(message):
     dashboard_url = f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}"
     bot.send_message(user_id, f"📊 *Your Dashboard:*\n\n{dashboard_url}", parse_mode="Markdown")
 
+@bot.message_handler(commands=['credits'])
+def credits_command(message):
+    """Check credits balance"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    if not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
+    credits = get_user_credits(user_id)
+    bot.send_message(
+        user_id,
+        f"💰 *Your Credits Balance*\n\n"
+        f"• Current Balance: `{credits}` 🪙\n"
+        f"• Swap Cost: `10` credits per attempt\n"
+        f"• Referral Bonus: `20` credits per friend\n\n"
+        f"*Ways to earn credits:*\n"
+        f"1. Refer friends (20 credits each)\n"
+        f"2. Admin rewards (contact admin)\n"
+        f"3. Marketplace sales\n\n"
+        f"*Note:* Credits are deducted only for failed swaps. Successful swaps are free!",
+        parse_mode="Markdown"
+    )
+
 @bot.message_handler(commands=['referral', 'refer'])
 def referral_command(message):
     """Referral command"""
@@ -2348,6 +2565,7 @@ def referral_command(message):
         # Get referral stats
         ref_count = get_user_referrals_count(user_id)
         free_swaps = get_user_free_swaps(user_id)
+        credits = get_user_credits(user_id)
         
         response = (
             f"🎁 *Your Referral Program*\n\n"
@@ -2356,13 +2574,14 @@ def referral_command(message):
             f"1. Share your link with friends\n"
             f"2. When they join using your link\n"
             f"3. You get **2 FREE swaps** for each friend!\n"
-            f"4. They get instant approval\n\n"
+            f"4. You get **20 credits** for each friend! 🪙\n"
+            f"5. They get instant approval\n\n"
             f"*Your Stats:*\n"
             f"• Total Referrals: {ref_count}\n"
             f"• Free Swaps Earned: {free_swaps}\n"
-            f"• Credits: {execute_one('SELECT credits FROM users WHERE user_id = ?', (user_id,))[0]}\n\n"
+            f"• Credits Balance: {credits} 🪙\n\n"
             f"*Rewards:*\n"
-            f"• 1 referral = 2 FREE swaps\n"
+            f"• 1 referral = 2 FREE swaps + 20 credits\n"
             f"• 5 referrals = Achievement badge\n"
             f"• 10 referrals = VIP features (coming soon)\n\n"
             f"Start sharing now! 🚀"
@@ -2396,23 +2615,23 @@ def stats_command(message):
 • Joined: {stats['join_date'][:10]}
 • Last Active: {stats['last_active'][:16]}
 
-*Swap Stats:*
+*Credits & Swaps:*
+• Credits Balance: {stats['credits']} 🪙
 • Total Swaps: {stats['total_swaps']}
 • Successful: {stats['successful_swaps']}
 • Success Rate: {stats['success_rate']:.1f}%
+• Swap Cost: 10 credits per attempt
 
 *Referral Stats:*
 • Total Referrals: {stats['total_referrals']}
 • Free Swaps Available: {stats['free_swaps']}
+• Referral Bonus: 20 credits per friend
 
 *Vouch Stats:*
 • Vouch Score: {stats['vouch_score']}
 • Positive Vouches: {stats['positive_vouches']}
 • Negative Vouches: {stats['negative_vouches']}
 • Total Transactions: {stats['total_transactions']}
-
-*Credits:*
-• Balance: {stats['credits']} 🪙
 """
         bot.send_message(user_id, response, parse_mode="Markdown")
     else:
@@ -2512,7 +2731,8 @@ def handle_private_messages(message):
         return
     
     # Default response
-    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*\n\nUse the buttons below or type /help for commands.", parse_mode="Markdown")
+    credits = get_user_credits(chat_id)
+    bot.send_message(chat_id, f"🤖 *CARNAGE Swapper - Main Menu*\n\n💰 Credits: {credits} 🪙\n⚡ Each swap costs 10 credits\n\nUse the buttons below or type /help for commands.", parse_mode="Markdown")
     show_main_menu(chat_id)
 
 def save_main_session(message):
@@ -2718,6 +2938,13 @@ def run_main_swap(chat_id):
     """Run main swap"""
     global requests_count, errors_count
     
+    # Check if user has enough credits
+    user_credits = get_user_credits(chat_id)
+    if user_credits < 10:
+        bot.send_message(chat_id, f"❌ *Insufficient credits!*\n\nYou need 10 credits to attempt a swap.\nCurrent balance: {user_credits} 🪙\n\nEarn credits by referring friends or contact admin.", parse_mode="Markdown")
+        show_swapper_menu(chat_id)
+        return
+    
     if not session_data[chat_id]["main"] or not session_data[chat_id]["target"]:
         bot.send_message(chat_id, "❌ *Set Main and Target Sessions first*", parse_mode="Markdown")
         show_swapper_menu(chat_id)
@@ -2779,15 +3006,19 @@ def run_main_swap(chat_id):
             bot.send_message(chat_id, f"✅ *{target_username} Released [{release_time}]*", parse_mode="Markdown")
             send_notifications(chat_id, target_username, "Swapped")
             log_swap(chat_id, target_username, "success")
+            
+            # Refund credits for successful swap
+            add_credits(chat_id, 10)  # Return the 10 credits
+            bot.send_message(chat_id, "🔄 *10 credits refunded for successful swap!*", parse_mode="Markdown")
         else:
-            bot.edit_message_text(f"❌ *Swap failed for {target_username}*", chat_id, message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"❌ *Swap failed for {target_username}*\n\n10 credits deducted for this attempt.", chat_id, message_id, parse_mode="Markdown")
             log_swap(chat_id, target_username, "failed", "Swap process failed")
         
         clear_session_data(chat_id, "main")
         clear_session_data(chat_id, "target")
         
     except Exception as e:
-        bot.edit_message_text(f"❌ *Error during swap: {str(e)}*", chat_id, message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"❌ *Error during swap: {str(e)}*\n\n10 credits deducted for this attempt.", chat_id, message_id, parse_mode="Markdown")
         log_swap(chat_id, "unknown", "failed", str(e))
     
     show_swapper_menu(chat_id)
@@ -3038,8 +3269,12 @@ def marketplace_command(message):
         return
     
     user_id = message.from_user.id
+    send_marketplace_to_user(user_id)
+
+def send_marketplace_to_user(user_id, edit_message_id=None):
+    """Send marketplace to user, optionally editing a message"""
     if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
+        send_welcome_with_channels(user_id, "User")
         return
     
     # Get active listings
@@ -3058,11 +3293,25 @@ def marketplace_command(message):
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("➕ Create Listing", callback_data="create_listing"),
+            InlineKeyboardButton("📦 Bulk Sell", callback_data="bulk_sell"),
             InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
         )
         
         response = "🛒 *CARNAGE MARKETPLACE*\n\nNo active listings found.\n\nBe the first to list a username for sale!"
-        bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
+        
+        if edit_message_id:
+            try:
+                bot.edit_message_text(
+                    response,
+                    user_id,
+                    edit_message_id,
+                    parse_mode="Markdown",
+                    reply_markup=markup
+                )
+            except:
+                bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
         return
     
     response = "🛒 *CARNAGE MARKETPLACE*\n\n"
@@ -3075,8 +3324,8 @@ def marketplace_command(message):
         currency_symbol = "💲"
         if listing["currency"] == "inr":
             price_text = f"₹{listing['price']}"
-        elif listing["currency"] == "usdt":
-            price_text = f"${listing['price']} USDT"
+        elif listing["currency"] == "crypto":
+            price_text = f"${listing['price']} CRYPTO"
         else:
             price_text = f"{listing['price']} {listing['currency']}"
         
@@ -3091,10 +3340,13 @@ def marketplace_command(message):
         elif listing["seller_vouch_score"] >= 20:
             vouch_badge = " ✅"
         
+        # Add verified session badge
+        verified_badge = " 🔐" if listing["verified_session"] == 1 else ""
+        
         response += (
-            f"{type_emoji} *@{listing['username']}*\n"
+            f"{type_emoji} *@{listing['username']}*{verified_badge}{vouch_badge}\n"
             f"Price: {currency_symbol} {price_text}\n"
-            f"Seller: @{listing['seller_username']}{vouch_badge} ({listing['seller_tier'].upper()})\n"
+            f"Seller: @{listing['seller_username']} ({listing['seller_tier'].upper()})\n"
             f"Type: {sale_type.upper()}\n"
             f"ID: `{listing['listing_id']}`\n"
             f"────────────────────\n"
@@ -3115,10 +3367,24 @@ def marketplace_command(message):
     # Add action buttons
     markup.add(
         InlineKeyboardButton("➕ Create Listing", callback_data="create_listing"),
+        InlineKeyboardButton("📦 Bulk Sell", callback_data="bulk_sell"),
         InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
     )
     
-    bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
+    if edit_message_id:
+        try:
+            bot.edit_message_text(
+                response,
+                user_id,
+                edit_message_id,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        except Exception as e:
+            print(f"Error editing marketplace message: {e}")
+            bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
+    else:
+        bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
 
 @bot.message_handler(commands=['sell'])
 def sell_command(message):
@@ -3144,7 +3410,8 @@ def sell_command(message):
     
     user_states[user_id] = {
         "action": "selling",
-        "step": "get_username"
+        "step": "get_username",
+        "listing_type": "single"
     }
     
     bot.send_message(
@@ -3153,6 +3420,51 @@ def sell_command(message):
         "Send the Instagram username you want to sell (without @):\n\n"
         "Example: `carnage` or `og.name`\n\n"
         "*Note:* You'll need to provide session ID to verify ownership.",
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['bulksell'])
+def bulksell_command(message):
+    """Start bulk selling process"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    
+    # Check if user has joined all channels
+    if not has_joined_all_channels(user_id):
+        send_welcome_with_channels(user_id, message.from_user.first_name)
+        return
+    
+    # Check if user is approved
+    if not is_user_approved(user_id):
+        bot.send_message(user_id, "❌ Your account is not approved yet. Contact admin or use referral system.")
+        return
+    
+    # Clear any existing state
+    if user_id in user_states:
+        del user_states[user_id]
+    
+    bulk_listings[user_id] = {
+        "usernames": [],
+        "sessions": [],
+        "prices": [],
+        "step": "waiting_format"
+    }
+    
+    bot.send_message(
+        user_id,
+        "📦 *Bulk List Usernames for Sale*\n\n"
+        "You can list multiple usernames at once!\n\n"
+        "*Format:*\n"
+        "username1:session1:price1\n"
+        "username2:session2:price2\n"
+        "username3:session3:price3\n\n"
+        "*Example:*\n"
+        "carnage:sessionid=abc123...:5000\n"
+        "og.name:sessionid=xyz789...:10000\n"
+        "vip.user:sessionid=def456...:7500\n\n"
+        "Send your usernames in the format above (one per line):",
         parse_mode="Markdown"
     )
 
@@ -3171,7 +3483,7 @@ def create_marketplace_listing(user_id, username, price, currency="inr",
     
     # Check if credits listing (not allowed)
     if currency == "credits":
-        return False, "Marketplace listings must be in real currency (INR/USDT). Credits not allowed."
+        return False, "Marketplace listings must be in real currency (INR/CRYPTO). Credits not allowed."
     
     listing_id = generate_listing_id()
     
@@ -3221,12 +3533,91 @@ def verify_seller_session(user_id, listing_id, session_id):
     # Store encrypted session
     encrypted_session = encrypt_session(session_id)
     execute_query(
-        "UPDATE marketplace_listings SET seller_session_encrypted = ?, verified_at = ? WHERE listing_id = ?",
+        "UPDATE marketplace_listings SET seller_session_encrypted = ?, verified_at = ?, verified_session = 1 WHERE listing_id = ?",
         (encrypted_session, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), listing_id),
         commit=True
     )
     
     return True, "Session verified and stored"
+
+# ==================== BULK LISTING PROCESSING ====================
+def process_bulk_listing(user_id, bulk_data):
+    """Process bulk listing data"""
+    try:
+        lines = bulk_data.strip().split('\n')
+        successful = 0
+        failed = 0
+        errors = []
+        
+        for i, line in enumerate(lines, 1):
+            try:
+                parts = line.split(':')
+                if len(parts) != 3:
+                    errors.append(f"Line {i}: Invalid format")
+                    failed += 1
+                    continue
+                
+                username = parts[0].strip().lower().replace('@', '')
+                session_id = parts[1].strip()
+                price = float(parts[2].strip())
+                
+                # Validate username format
+                if not re.match(r'^[a-zA-Z0-9._]{1,30}$', username):
+                    errors.append(f"Line {i}: Invalid username format")
+                    failed += 1
+                    continue
+                
+                # Validate session
+                validation = validate_session(session_id, user_id=user_id)
+                if not validation["success"]:
+                    errors.append(f"Line {i}: Invalid session - {validation['error']}")
+                    failed += 1
+                    continue
+                
+                # Verify ownership
+                if validation["username"].lower() != username.lower():
+                    errors.append(f"Line {i}: Session doesn't own @{username}")
+                    failed += 1
+                    continue
+                
+                # Check if already listed
+                existing = execute_one(
+                    "SELECT listing_id FROM marketplace_listings WHERE username = ? AND status = 'active'",
+                    (username,)
+                )
+                if existing:
+                    errors.append(f"Line {i}: @{username} already listed")
+                    failed += 1
+                    continue
+                
+                # Create listing
+                listing_id = generate_listing_id()
+                encrypted_session = encrypt_session(session_id)
+                
+                execute_query('''
+                    INSERT INTO marketplace_listings 
+                    (listing_id, seller_id, username, price, currency, listing_type, sale_type,
+                     seller_session_encrypted, verified_at, verified_session, created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    listing_id, user_id, username, price, "inr", "sale", "fixed",
+                    encrypted_session,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    1,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+                ), commit=True)
+                
+                successful += 1
+                
+            except Exception as e:
+                errors.append(f"Line {i}: {str(e)}")
+                failed += 1
+        
+        return successful, failed, errors
+        
+    except Exception as e:
+        return 0, 0, [str(e)]
 
 # ==================== AUCTION SYSTEM ====================
 @bot.message_handler(commands=['bid'])
@@ -4307,6 +4698,11 @@ def handle_all_messages(message):
         handle_selling_state(user_id, text)
         return
     
+    # Check if user is in bulk listing state
+    if user_id in bulk_listings and bulk_listings[user_id]["step"] == "waiting_format":
+        handle_bulk_listing(user_id, text)
+        return
+    
     # Check if user is in pending swap state
     if user_id in pending_swaps:
         handle_pending_swap(user_id, text)
@@ -4324,6 +4720,39 @@ def handle_all_messages(message):
     # Handle private messages
     if message.chat.type == 'private':
         handle_private_messages(message)
+
+def handle_bulk_listing(user_id, text):
+    """Handle bulk listing data"""
+    if user_id not in bulk_listings:
+        return
+    
+    try:
+        # Process bulk listing
+        successful, failed, errors = process_bulk_listing(user_id, text)
+        
+        response = f"📦 *Bulk Listing Results*\n\n"
+        response += f"✅ Successful: {successful}\n"
+        response += f"❌ Failed: {failed}\n\n"
+        
+        if successful > 0:
+            response += f"🎉 {successful} usernames listed successfully!\n"
+            response += f"View them in marketplace with /marketplace\n\n"
+        
+        if errors:
+            response += "*Errors:*\n"
+            for error in errors[:10]:  # Show only first 10 errors
+                response += f"• {error}\n"
+            if len(errors) > 10:
+                response += f"... and {len(errors) - 10} more errors\n"
+        
+        bot.send_message(user_id, response, parse_mode="Markdown")
+        
+        # Clear bulk listing state
+        del bulk_listings[user_id]
+        
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Error processing bulk listing: {str(e)}")
+        del bulk_listings[user_id]
 
 def handle_selling_state(user_id, text):
     """Handle user in selling state - FIXED VERSION"""
@@ -4378,7 +4807,7 @@ def handle_selling_state(user_id, text):
             # Validate minimum price
             min_prices = {
                 "inr": 1000,
-                "usdt": 10
+                "crypto": 10
             }
             
             currency = state.get("currency", "inr")
@@ -4523,8 +4952,8 @@ def handle_selling_state(user_id, text):
             currency_symbol = "💲"
             if state["currency"] == "inr":
                 price_text = f"₹{state['price']}"
-            elif state["currency"] == "usdt":
-                price_text = f"${state['price']} USDT"
+            elif state["currency"] == "crypto":
+                price_text = f"${state['price']} CRYPTO"
             
             sale_type_text = ""
             if state.get("sale_type") == "auction":
@@ -4535,7 +4964,7 @@ def handle_selling_state(user_id, text):
             bot.send_message(
                 user_id,
                 f"✅ *Listing Created Successfully!*\n\n"
-                f"Username: @{state['username']}\n"
+                f"Username: @{state['username']} 🔐\n"
                 f"Price: {currency_symbol} {price_text}\n"
                 f"Type: {state.get('sale_type', 'fixed').upper()}{sale_type_text}\n"
                 f"Listing ID: `{state['listing_id']}`\n\n"
@@ -4552,7 +4981,7 @@ def handle_selling_state(user_id, text):
                 bot.send_message(
                     MARKETPLACE_CHANNEL_ID,
                     f"🆕 *NEW LISTING!*\n\n"
-                    f"{type_emoji} Username: `@{state['username']}`\n"
+                    f"{type_emoji} Username: `@{state['username']}` 🔐\n"
                     f"Price: {currency_symbol} {price_text}\n"
                     f"Type: {state.get('sale_type', 'fixed').upper()}{sale_type_text}\n"
                     f"Seller: Verified ✅\n"
@@ -4647,23 +5076,27 @@ def callback_handler(call):
         
         elif data == "refresh_marketplace":
             try:
-                # Delete the current message and send new marketplace
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-                marketplace_command(call.message)
-                bot.answer_callback_query(call.id, "Marketplace refreshed")
+                bot.answer_callback_query(call.id, "Refreshing marketplace...")
+                send_marketplace_to_user(call.from_user.id, call.message.message_id)
             except Exception as e:
                 print(f"Error refreshing marketplace: {e}")
-                bot.answer_callback_query(call.id, "Error refreshing, please try again")
+                bot.answer_callback_query(call.id, "Error refreshing, please try /marketplace again")
             
         elif data == "create_listing":
             try:
-                # Send sell command directly to user
-                bot.delete_message(call.message.chat.id, call.message.message_id)
+                bot.answer_callback_query(call.id, "Starting listing creation...")
                 sell_command(call.message)
-                bot.answer_callback_query(call.id)
             except Exception as e:
                 print(f"Error creating listing: {e}")
                 bot.answer_callback_query(call.id, "Error starting listing creation")
+        
+        elif data == "bulk_sell":
+            try:
+                bot.answer_callback_query(call.id, "Starting bulk listing...")
+                bulksell_command(call.message)
+            except Exception as e:
+                print(f"Error starting bulk sell: {e}")
+                bot.answer_callback_query(call.id, "Error starting bulk listing")
         
         elif data.startswith("sale_type_"):
             sale_type = data.split("_")[2]
@@ -4678,7 +5111,7 @@ def callback_handler(call):
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(
                 InlineKeyboardButton("🇮🇳 Indian Rupees (INR)", callback_data="currency_inr"),
-                InlineKeyboardButton("💲 USDT Crypto", callback_data="currency_usdt")
+                InlineKeyboardButton("💲 CRYPTO", callback_data="currency_crypto")
             )
             
             bot.edit_message_text(
@@ -4705,7 +5138,7 @@ def callback_handler(call):
             # Show minimum prices
             min_prices = {
                 "inr": "₹1000",
-                "usdt": "$10 USDT"
+                "crypto": "$10 CRYPTO"
             }
             
             bot.edit_message_text(
@@ -4736,8 +5169,8 @@ def callback_handler(call):
                 currency_symbol = "💲"
                 if listing["currency"] == "inr":
                     price_text = f"₹{listing['price']}"
-                elif listing["currency"] == "usdt":
-                    price_text = f"${listing['price']} USDT"
+                elif listing["currency"] == "crypto":
+                    price_text = f"${listing['price']} CRYPTO"
                 else:
                     price_text = f"{listing['price']} {listing['currency']}"
                 
@@ -4764,6 +5197,9 @@ def callback_handler(call):
                 
                 markup = InlineKeyboardMarkup(row_width=2)
                 
+                # Add verified session badge
+                verified_badge = " 🔐 Verified Session" if listing["verified_session"] == 1 else ""
+                
                 # Add different buttons based on sale type
                 if listing["sale_type"] == "fixed":
                     markup.add(
@@ -4786,11 +5222,11 @@ def callback_handler(call):
                 
                 markup.add(InlineKeyboardButton("🔙 Back to Marketplace", callback_data="refresh_marketplace"))
                 
-                verified_text = "✅ Verified" if listing["seller_session_encrypted"] else "❌ Not Verified"
+                verified_text = "✅ Verified Session" if listing["verified_session"] == 1 else "❌ Not Verified"
                 
                 response = (
                     f"🔍 *Listing Details*\n\n"
-                    f"*Username:* `{listing['username']}`\n"
+                    f"*Username:* `{listing['username']}`{verified_badge}\n"
                     f"*Price:* {currency_symbol} {price_text}\n"
                     f"*Seller:* @{listing['seller_username'] or 'User'}\n"
                     f"*Seller Tier:* {listing['seller_tier'].upper()}\n"
@@ -5064,6 +5500,41 @@ def callback_handler(call):
             admin_bannedusers(call.message)
             bot.answer_callback_query(call.id, "Refreshed")
             
+        elif data.startswith("confirm_broadcast_"):
+            if not is_admin(user_id):
+                bot.answer_callback_query(call.id, "❌ Admin only", show_alert=True)
+                return
+            
+            # Extract message from callback data
+            message_hash = data.split("_")[2]
+            
+            # Get the original message from the edited message
+            original_message = call.message.text
+            # Extract the message after "Message: " and before the newlines
+            message_text = original_message.split("Message: ")[1].split("\n\n")[0]
+            
+            # Send broadcast
+            sent_count, failed_count = send_broadcast_to_all(message_text, user_id)
+            
+            if sent_count > 0:
+                bot.answer_callback_query(call.id, f"✅ Broadcast sent to {sent_count} users")
+                bot.edit_message_text(
+                    f"📢 *Broadcast Completed!*\n\n"
+                    f"Message: {message_text}\n\n"
+                    f"✅ Sent to: {sent_count} users\n"
+                    f"❌ Failed: {failed_count} users\n\n"
+                    f"Total attempted: {sent_count + failed_count}",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    parse_mode="Markdown"
+                )
+            else:
+                bot.answer_callback_query(call.id, "❌ Failed to send broadcast")
+                
+        elif data == "cancel_broadcast":
+            bot.answer_callback_query(call.id, "Broadcast cancelled")
+            bot.edit_message_text("❌ Broadcast cancelled.", call.message.chat.id, call.message.message_id)
+            
     except Exception as e:
         print(f"Callback error: {e}")
         bot.answer_callback_query(call.id, f"Error: {str(e)}", show_alert=True)
@@ -5086,11 +5557,12 @@ def health_check():
         "status": "online",
         "service": "CARNAGE Swapper Bot",
         "timestamp": datetime.now().isoformat(),
-        "version": "8.0.0",
-        "features": ["Instagram API", "Session Encryption", "Marketplace", "Auction System", "Vouch System", "Escrow"],
+        "version": "8.1.0",
+        "features": ["Instagram API", "Session Encryption", "Marketplace", "Auction System", "Vouch System", "Escrow", "Credits System", "Bulk Listings"],
         "users": execute_one("SELECT COUNT(*) FROM users")[0] or 0,
         "listings": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active'")[0] or 0,
-        "auctions": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE sale_type = 'auction' AND status = 'active'")[0] or 0
+        "auctions": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE sale_type = 'auction' AND status = 'active'")[0] or 0,
+        "total_credits": execute_one("SELECT SUM(credits) FROM users")[0] or 0
     })
 
 @app.route('/dashboard/<int:user_id>')
@@ -5140,7 +5612,7 @@ def user_dashboard(user_id):
             successful_swaps=stats['successful_swaps'],
             success_rate=f"{stats['success_rate']:.1f}",
             total_referrals=stats['total_referrals'],
-            free_swaps=stats['free_swaps'],
+            credits=stats['credits'],
             achievements_unlocked=stats['achievements_unlocked'],
             achievements_total=10,
             achievements_html=achievements_html,
@@ -5313,6 +5785,7 @@ def admin_tab(tab_name):
                     <td><span class="badge {status_class}">{swap[2]}</span></td>
                     <td>{swap[3]}</td>
                     <td>{swap[4] or '-'}</td>
+                    <td>{swap[6] or 0} 🪙</td>
                 </tr>
                 '''
             
@@ -5327,6 +5800,7 @@ def admin_tab(tab_name):
                         <th>Status</th>
                         <th>Time</th>
                         <th>Error</th>
+                        <th>Credits</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -5358,6 +5832,7 @@ def admin_tab(tab_name):
                     <td><span class="badge {status_class}">{listing[6]}</span></td>
                     <td>{listing[10]}</td>
                     <td>{listing[11]}</td>
+                    <td>{"✅" if listing[23] == 1 else "❌"}</td>
                 </tr>
                 '''
             
@@ -5374,6 +5849,7 @@ def admin_tab(tab_name):
                         <th>Status</th>
                         <th>Created</th>
                         <th>Expires</th>
+                        <th>Verified</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -5418,6 +5894,23 @@ def admin_tab(tab_name):
             </div>
             '''
         
+        elif tab_name == 'broadcast':
+            return '''
+            <h3><i class="fas fa-bullhorn"></i> Send Broadcast</h3>
+            <div style="margin-top: 20px;">
+                <textarea id="broadcastMessage" placeholder="Enter broadcast message..." 
+                          style="width: 100%; height: 200px; padding: 15px; border-radius: 10px; 
+                                 background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); 
+                                 color: white; font-size: 1em; margin-bottom: 20px;"></textarea>
+                <button class="btn" onclick="sendBroadcast()" style="width: 100%; padding: 15px; font-size: 1.2em;">
+                    <i class="fas fa-paper-plane"></i> Send to All Users
+                </button>
+                <p style="color: #aaa; margin-top: 20px; font-size: 0.9em;">
+                    <i class="fas fa-info-circle"></i> This will send the message to all non-banned users.
+                </p>
+            </div>
+            '''
+        
         return f"<h3>Tab {tab_name}</h3><p>Content coming soon...</p>"
         
     except Exception as e:
@@ -5439,19 +5932,62 @@ def admin_action():
             execute_query("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", (reason, user_id), commit=True)
             return jsonify({"success": True, "message": f"User {user_id} banned: {reason}"})
         elif action == 'addcredits':
-            execute_query("UPDATE users SET credits = credits + 100 WHERE user_id = ?", (user_id,), commit=True)
+            add_credits(user_id, 100)
             return jsonify({"success": True, "message": f"Added 100 credits to user {user_id}"})
         
         return jsonify({"success": False, "message": "Unknown action"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 
+@app.route('/admin/broadcast', methods=['POST'])
+def admin_broadcast():
+    """Handle broadcast message"""
+    try:
+        data = request.json
+        message = data.get('message')
+        
+        if not message:
+            return jsonify({"success": False, "message": "No message provided"})
+        
+        # Get all user IDs
+        users = execute_query("SELECT user_id FROM users WHERE is_banned = 0")
+        
+        if not users:
+            return jsonify({"success": False, "message": "No users found"})
+        
+        sent_count = 0
+        failed_count = 0
+        
+        for user in users:
+            user_id = user[0]
+            try:
+                bot.send_message(
+                    user_id,
+                    f"📢 *ANNOUNCEMENT FROM CARNAGE*\n\n{message}\n\n",
+                    parse_mode="Markdown"
+                )
+                sent_count += 1
+                time.sleep(0.1)  # Prevent rate limiting
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to send to {user_id}: {e}")
+        
+        return jsonify({
+            "success": True, 
+            "message": f"Broadcast sent to {sent_count} users. Failed: {failed_count}"
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
 @app.route('/ping')
 def ping():
     return jsonify({"status": "pong", "time": datetime.now().isoformat()})
+
 @app.route('/health')
 def health():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
 @app.route('/ping1')
 def ping1():
     return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
@@ -5462,11 +5998,33 @@ def post_initial_announcements():
     try:
         # Updates Channel Announcement
         updates_message = """
-🎉 *CARNAGE SWAPPER v8.0 OFFICIAL LAUNCH!* 🚀
+🎉 *CARNAGE SWAPPER v8.1 OFFICIAL LAUNCH!* 🚀
 
-We are excited to announce *Version 8.0* of *CARNAGE Swapper Bot* - Now with AUCTION SYSTEM & VOUCH SYSTEM!
+*✨ NEW FEATURES IN v8.1:*
 
-*✨ NEW FEATURES IN v8.0:*
+💰 *CREDITS SYSTEM*
+• New users get 100 free credits
+• Each swap attempt costs 10 credits
+• Successful swaps refund credits
+• Refer friends for 20 credits each
+• Admins can add credits to users
+
+📦 *BULK LISTING*
+• List multiple usernames at once
+• Automatic session verification
+• Format: username:session:price
+• Perfect for username sellers
+
+🔐 *ENHANCED VERIFICATION*
+• Verified session badges
+• Session validation for all listings
+• Ownership verification required
+• Secure encrypted storage
+
+📢 *ADMIN BROADCAST*
+• Send announcements to all users
+• Admin control panel improved
+• Better user management
 
 🎯 *AUCTION SYSTEM*
 • Bid on Instagram usernames
@@ -5479,23 +6037,6 @@ We are excited to announce *Version 8.0* of *CARNAGE Swapper Bot* - Now with AUC
 • Positive/Negative feedback
 • Vouch score calculation
 • Verified transactions only
-
-🛒 *ENHANCED MARKETPLACE*
-• Fixed price and auction listings
-• Verified seller sessions
-• Real currency only (INR/USDT)
-• Secure escrow transactions
-
-🔐 *IMPROVED SECURITY*
-• One middleman per swap system
-• Enhanced session encryption
-• Fake bid detection
-• Permanent ban for rule violations
-
-📊 *USER REPUTATION*
-• Vouch scores displayed
-• Transaction history
-• Trust levels
 
 *🚀 GET STARTED:*
 1. Start the bot: @CarnageSwapperBot
@@ -5510,28 +6051,33 @@ We are excited to announce *Version 8.0* of *CARNAGE Swapper Bot* - Now with AUC
 • Verify sellers before buying
 
 *🎁 REFERRAL PROGRAM:*
-Refer friends and earn FREE swaps! 2 swaps per referral!
+Refer friends and earn FREE swaps + 20 credits each!
 
 *Welcome to the most advanced username swapping platform!* 🔥
 """
         
         # Marketplace Channel Announcement
         marketplace_message = """
-🛒 *CARNAGE MARKETPLACE v8.0 - NOW WITH AUCTIONS!* 💰
+🛒 *CARNAGE MARKETPLACE v8.1 - NOW WITH BULK LISTING!* 💰
 
-Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
+Welcome to the upgraded CARNAGE Marketplace with BULK LISTING SYSTEM!
 
-*🎯 NEW AUCTION FEATURES:*
-• Bid on Instagram usernames
-• Automatic bid increments
-• Buy Now option available
-• 24-hour auction duration
-• Real-time bid notifications
+*📦 NEW BULK FEATURES:*
+• List multiple usernames at once
+• Automatic session validation
+• Ownership verification
+• Quick listing process
 
 *💰 SALE TYPES AVAILABLE:*
 1. *Fixed Price* - Set your price
 2. *Auction* - Accept bids for 24 hours
 3. *Buy Now + Auction* - Set buy now price + accept bids
+
+*🔐 VERIFIED SESSIONS:*
+• All listings now show verified status
+• Session validation required
+• Ownership proof required
+• Secure encrypted storage
 
 *⚠️ AUCTION RULES:*
 • Minimum bid increments apply
@@ -5546,10 +6092,11 @@ Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
 • Trusted sellers get badges
 
 *📋 HOW TO SELL:*
-1. Use `/sell` command
-2. Choose sale type (Fixed/Auction/Buy Now)
-3. Set price and verify ownership
-4. Your listing goes live instantly!
+1. Use `/sell` for single listing
+2. Use `/bulksell` for multiple usernames
+3. Choose sale type (Fixed/Auction/Buy Now)
+4. Set price and verify ownership
+5. Your listing goes live instantly!
 
 *🛍️ HOW TO BUY/BID:*
 1. Browse with `/marketplace`
@@ -5559,7 +6106,7 @@ Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
 
 *💰 PAYMENT METHODS:*
 • Indian Rupees (INR) - UPI/Bank Transfer
-• USDT Crypto (TRC20/ERC20)
+• CRYPTO (USDT/BTC/ETH)
 
 *Start listing or bidding now with @CarnageSwapperBot!* 🚀
 
@@ -5612,7 +6159,7 @@ def main():
     auction_thread.start()
     
     print("✅ Database initialized successfully")
-    print("🚀 CARNAGE Swapper Bot v8.0 - PRODUCTION READY")
+    print("🚀 CARNAGE Swapper Bot v8.1 - PRODUCTION READY")
     print(f"👑 Admin ID: {ADMIN_USER_ID}")
     print(f"🤖 Bot Username: @{BOT_USERNAME}")
     print(f"📢 Updates Channel: {CHANNELS['updates']['id']}")
@@ -5620,13 +6167,16 @@ def main():
     print(f"🛒 Marketplace Channel: {MARKETPLACE_CHANNEL_ID}")
     print(f"👥 Admin Group: {ADMIN_GROUP_ID}")
     print("✨ Features: COMPLETE MARKETPLACE WITH AUCTION & VOUCH SYSTEM")
-    print("🔐 Session Encryption: All sessions encrypted at rest")
+    print("💰 Credits System: 10 credits per swap attempt")
+    print("📦 Bulk Listing: List multiple usernames at once")
+    print("🔐 Session Verification: All sessions validated")
     print("🎯 Auction System: Bid on usernames with Buy Now option")
     print("🤝 Vouch System: User reputation with automatic vouch requests")
-    print("💰 Marketplace: Real money only (INR/USDT)")
+    print("💲 Currency: INR & CRYPTO (replaced USDT)")
     print("⚖️ One Middleman System: Simplified escrow transactions")
     print("📊 HTML Dashboard & Admin Panel")
     print("🚫 Fake Bid Protection: Permanent ban for fake bids")
+    print("📢 Admin Broadcast: Send messages to all users")
     
     # Post initial announcements
     print("📢 Posting initial announcements to channels...")
@@ -5649,22 +6199,32 @@ def main():
     print("• Vouch System: Automatic reputation building")
     print("• Session Verification: Required for sellers")
     
+    print("\n💰 **CREDITS SYSTEM:**")
+    print("• New users: 100 credits free")
+    print("• Swap attempt: 10 credits")
+    print("• Successful swap: Credits refunded")
+    print("• Referral: 20 credits per friend")
+    print("• Admin can add credits")
+    
     print("\n🔗 **URLS:**")
     print(f"• Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/USER_ID")
     print(f"• Admin Panel: https://separate-genny-1carnage1-2b4c603c.koyeb.app/admin?auth=carnage123")
     
     print("\n✅ **PRODUCTION READY WITH ALL FEATURES!**")
-    print("\n📋 **ADDED FEATURES IN v8.0:**")
-    print("1. ✅ Auction System - Bid on usernames")
-    print("2. ✅ Vouch System - User reputation")
-    print("3. ✅ Fixed /sell command with inline menus")
-    print("4. ✅ Fixed /marketplace with inline buttons")
-    print("5. ✅ Buy Now option for auctions")
-    print("6. ✅ Fake bid protection (Permanent ban)")
-    print("7. ✅ Automatic vouch requests after swaps")
-    print("8. ✅ One middleman per swap system")
-    print("9. ✅ Vouch scores in marketplace listings")
-    print("10. ✅ Auction ending checker (background thread)")
+    print("\n📋 **ADDED FEATURES IN v8.1:**")
+    print("1. ✅ Credits System - 10 credits per swap")
+    print("2. ✅ Bulk Listing - Multiple usernames at once")
+    print("3. ✅ Session Verification for all listings")
+    print("4. ✅ Admin Broadcast command")
+    print("5. ✅ USDT replaced with CRYPTO")
+    print("6. ✅ Fixed /sell command with inline menus")
+    print("7. ✅ Fixed /marketplace with inline buttons")
+    print("8. ✅ Buy Now option for auctions")
+    print("9. ✅ Fake bid protection (Permanent ban)")
+    print("10. ✅ Automatic vouch requests after swaps")
+    print("11. ✅ One middleman per swap system")
+    print("12. ✅ Vouch scores in marketplace listings")
+    print("13. ✅ Auction ending checker (background thread)")
     
     try:
         while True:
