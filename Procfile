@@ -1,1 +1,1 @@
-web: python start_bots.py
+web: python coordinator.py
