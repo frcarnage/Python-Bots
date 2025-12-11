@@ -4646,12 +4646,24 @@ def callback_handler(call):
                 )
         
         elif data == "refresh_marketplace":
-            marketplace_command(call.message)
-            bot.answer_callback_query(call.id, "Marketplace refreshed")
+            try:
+                # Delete the current message and send new marketplace
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                marketplace_command(call.message)
+                bot.answer_callback_query(call.id, "Marketplace refreshed")
+            except Exception as e:
+                print(f"Error refreshing marketplace: {e}")
+                bot.answer_callback_query(call.id, "Error refreshing, please try again")
             
         elif data == "create_listing":
-            sell_command(call.message)
-            bot.answer_callback_query(call.id)
+            try:
+                # Send sell command directly to user
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+                sell_command(call.message)
+                bot.answer_callback_query(call.id)
+            except Exception as e:
+                print(f"Error creating listing: {e}")
+                bot.answer_callback_query(call.id, "Error starting listing creation")
         
         elif data.startswith("sale_type_"):
             sale_type = data.split("_")[2]
@@ -5452,9 +5464,9 @@ def post_initial_announcements():
         updates_message = """
 🎉 *CARNAGE SWAPPER v8.0 OFFICIAL LAUNCH!* 🚀
 
-We are excited to announce *Version 2.0* of *CARNAGE Swapper Bot* - Now with AUCTION SYSTEM & VOUCH SYSTEM!
+We are excited to announce *Version 8.0* of *CARNAGE Swapper Bot* - Now with AUCTION SYSTEM & VOUCH SYSTEM!
 
-*✨ NEW FEATURES IN v2.0:*
+*✨ NEW FEATURES IN v8.0:*
 
 🎯 *AUCTION SYSTEM*
 • Bid on Instagram usernames
@@ -5505,7 +5517,7 @@ Refer friends and earn FREE swaps! 2 swaps per referral!
         
         # Marketplace Channel Announcement
         marketplace_message = """
-🛒 *CARNAGE MARKETPLACE v2.0 - NOW WITH AUCTIONS!* 💰
+🛒 *CARNAGE MARKETPLACE v8.0 - NOW WITH AUCTIONS!* 💰
 
 Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
 
@@ -5546,8 +5558,8 @@ Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
 4. Contact middleman to complete
 
 *💰 PAYMENT METHODS:*
-• Indian Rupees (INR) - UPI/Bank Transfer/QR
-•  Crypto (Ltc,Btc,Eth,etc...)
+• Indian Rupees (INR) - UPI/Bank Transfer
+• USDT Crypto (TRC20/ERC20)
 
 *Start listing or bidding now with @CarnageSwapperBot!* 🚀
 
