@@ -1,1 +1,1 @@
-web: python runner.py
+web: python start_bots.py
