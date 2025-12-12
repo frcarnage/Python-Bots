@@ -1760,7 +1760,7 @@ def start_appeal(message):
     bot.register_next_step_handler(msg, process_appeal_username)
 
 def process_appeal_username(message):
-    """Process appeal username"""
+    """Process appeal username - Modified for suspended accounts"""
     username = message.text.strip().replace('@', '')
     chat_id = message.chat.id
     
@@ -1768,46 +1768,27 @@ def process_appeal_username(message):
         bot.reply_to(message, "❌ Invalid username. Please start again with /appeal")
         return
     
-    # Check account integrity
-    processing_msg = bot.reply_to(message, f"🔍 Checking account @{username}...")
-    
-    integrity_result = integrity_checker.check_account_integrity(username)
-    risk_score = integrity_result.get('risk_score', 100)
-    
-    if not integrity_result.get('account_exists', False):
-        bot.edit_message_text(
-            f"❌ Account `{username}` not found on Instagram.\n"
-            f"Please verify the username and try again.",
-            chat_id,
-            processing_msg.message_id,
-            parse_mode='Markdown'
-        )
-        return
-    
-    # Store in user state
+    # Store in user state WITHOUT checking public existence
     if chat_id not in user_states:
         user_states[chat_id] = {}
     
+    # Note: We're not checking account integrity for suspended accounts
     user_states[chat_id].update({
         'appeal_username': username,
-        'appeal_risk_score': risk_score,
-        'appeal_step': 'email'
+        'appeal_risk_score': 50,  # Default medium risk since we can't verify
+        'appeal_step': 'email',
+        'timestamp': time.time()
     })
     
-    bot.edit_message_text(
-        f"✅ Account Found: `{username}`\n"
-        f"📊 Risk Score: {risk_score}/100\n"
-        f"{'🟢 Good standing' if risk_score <= 30 else '🟡 Average' if risk_score <= 60 else '🟠 Needs attention'}\n\n"
-        f"📧 Enter the email associated with @{username}:",
-        chat_id,
-        processing_msg.message_id,
-        parse_mode='Markdown'
-    )
+    bot.reply_to(message, 
+                 f"👤 Username: `{username}`\n\n"
+                 f"📧 Enter the email address associated with this Instagram account:\n\n"
+                 f"*Note:* For suspended/disabled accounts, use the email you registered with.",
+                 parse_mode='Markdown')
     
     bot.register_next_step_handler(message, process_appeal_email)
-
 def process_appeal_email(message):
-    """Process appeal email"""
+    """Process appeal email - Modified for suspended accounts"""
     email = message.text.strip()
     chat_id = message.chat.id
     
@@ -1820,27 +1801,9 @@ def process_appeal_email(message):
         return
     
     username = user_states[chat_id]['appeal_username']
-    risk_score = user_states[chat_id]['appeal_risk_score']
     
-    # Check for recent appeals
-    conn = sqlite3.connect('instagram_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT submitted_at FROM appeals 
-        WHERE username = ? AND email = ?
-        ORDER BY submitted_at DESC LIMIT 1
-    ''', (username, email))
-    
-    recent = cursor.fetchone()
-    conn.close()
-    
-    if recent:
-        submitted_time = datetime.strptime(recent[0], '%Y-%m-%d %H:%M:%S')
-        hours_ago = (datetime.now() - submitted_time).total_seconds() / 3600
-        
-        if hours_ago < 24:
-            bot.reply_to(message, f"⚠️ Recent appeal submitted {hours_ago:.1f} hours ago. Please wait 24 hours.")
-            return
+    # REMOVED: The database check for recent appeals
+    # (Suspended accounts won't be in the appeals table yet)
     
     user_states[chat_id].update({
         'appeal_email': email,
@@ -1860,13 +1823,13 @@ def process_appeal_email(message):
         "• 👤 *Age Issue* - Age restriction\n"
         "• 💼 *Business* - Business account\n"
         "• 📝 *Other* - Other violations\n\n"
-        f"📧 Email: `{email}`",
+        f"📧 Email: `{email}`\n\n"
+        f"*Important:* Choose the correct type for better processing.",
         parse_mode='Markdown',
         reply_markup=markup
     )
     
     bot.register_next_step_handler(message, process_appeal_type)
-
 def process_appeal_type(message):
     """Process appeal type"""
     appeal_type_text = message.text.strip()
