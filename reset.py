@@ -995,7 +995,7 @@ def send_welcome(message):
     bot.reply_to(message, welcome_text, parse_mode='Markdown')
 
 # ========== FLASK ENDPOINTS ==========
-@app.route('/')
+@app.route('/bot')
 def home():
     return jsonify({
         "status": "running",
@@ -1012,7 +1012,7 @@ def home():
         "timestamp": datetime.now().isoformat()
     })
 
-@app.route('/health')
+@app.route('/bot/health')
 def health_check():
     return jsonify({
         "status": "healthy",
