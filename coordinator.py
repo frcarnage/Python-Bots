@@ -16,13 +16,13 @@ coordinator_app = Flask(__name__)
 # Track running bots
 running_bots = {
     "main_bot": False,
-    "reset_bot": False
+    "hunter_bot": False  # Changed from reset_bot to hunter_bot
 }
 
 # Track bot health status
 bot_health = {
     "main_bot": "unknown",
-    "reset_bot": "unknown"
+    "hunter_bot": "unknown"  # Changed from reset_bot to hunter_bot
 }
 
 # Store processes for cleanup
@@ -60,14 +60,15 @@ def home():
             "main_bot": {
                 "port": 8000,
                 "url": "http://localhost:8000",
+                "health_url": "http://localhost:8000/health",
                 "type": "Username Swapper Bot",
                 "status": bot_health["main_bot"]
             },
-            "reset_bot": {
-                "port": 5001,
-                "health_url": "http://localhost:6001/health/reset",
-                "type": "Instagram Reset Bot",
-                "status": bot_health["reset_bot"]
+            "hunter_bot": {
+                "port": 6001,
+                "health_url": "http://localhost:6001/health/hunter",
+                "type": "Instagram 4L Hunter Bot",
+                "status": bot_health["hunter_bot"]
             }
         },
         "coordinator": {
@@ -79,11 +80,16 @@ def home():
 def check_bot_health():
     """Check if bots are responding"""
     try:
-        # Check main bot
-        response = requests.get("http://localhost:8000", timeout=5)
+        # Check main bot (username swapper)
+        response = requests.get("http://localhost:8000/health", timeout=5)
         if response.status_code == 200:
-            bot_health["main_bot"] = "healthy"
-            running_bots["main_bot"] = True
+            data = response.json()
+            if data.get("status") == "healthy":
+                bot_health["main_bot"] = "healthy"
+                running_bots["main_bot"] = True
+            else:
+                bot_health["main_bot"] = f"unhealthy: {data.get('status', 'unknown')}"
+                running_bots["main_bot"] = False
         else:
             bot_health["main_bot"] = f"unhealthy: HTTP {response.status_code}"
             running_bots["main_bot"] = False
@@ -98,28 +104,28 @@ def check_bot_health():
         running_bots["main_bot"] = False
     
     try:
-        # Check reset bot
+        # Check hunter bot (4L username hunter)
         response = requests.get("http://localhost:6001/health/hunter", timeout=5)
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "healthy":
-                bot_health["reset_bot"] = "healthy"
-                running_bots["reset_bot"] = True
+                bot_health["hunter_bot"] = "healthy"
+                running_bots["hunter_bot"] = True
             else:
-                bot_health["reset_bot"] = f"unhealthy: {data.get('status', 'unknown')}"
-                running_bots["reset_bot"] = False
+                bot_health["hunter_bot"] = f"unhealthy: {data.get('status', 'unknown')}"
+                running_bots["hunter_bot"] = False
         else:
-            bot_health["reset_bot"] = f"unhealthy: HTTP {response.status_code}"
-            running_bots["reset_bot"] = False
+            bot_health["hunter_bot"] = f"unhealthy: HTTP {response.status_code}"
+            running_bots["hunter_bot"] = False
     except requests.exceptions.Timeout:
-        bot_health["reset_bot"] = "timeout"
-        running_bots["reset_bot"] = False
+        bot_health["hunter_bot"] = "timeout"
+        running_bots["hunter_bot"] = False
     except requests.exceptions.ConnectionError:
-        bot_health["reset_bot"] = "connection_refused"
-        running_bots["reset_bot"] = False
+        bot_health["hunter_bot"] = "connection_refused"
+        running_bots["hunter_bot"] = False
     except Exception as e:
-        bot_health["reset_bot"] = f"error: {str(e)[:50]}"
-        running_bots["reset_bot"] = False
+        bot_health["hunter_bot"] = f"error: {str(e)[:50]}"
+        running_bots["hunter_bot"] = False
 
 def run_flask():
     """Run Flask server for coordinator"""
@@ -136,8 +142,9 @@ def run_flask():
 def run_bot(script_name, name, port):
     """Run a bot script and update status"""
     print(f"🚀 Starting {name} ({script_name}) on port {port}...")
-    running_bots[f"{name.lower()}_bot"] = True
-    bot_health[f"{name.lower()}_bot"] = "starting"
+    bot_key = f"{name.lower()}_bot"
+    running_bots[bot_key] = True
+    bot_health[bot_key] = "starting"
     
     # Set environment variable for port
     env = os.environ.copy()
@@ -172,23 +179,23 @@ def run_bot(script_name, name, port):
                 if line_count <= 20:
                     if "Starting Flask server on port" in line_text or "🌐 Starting Flask server" in line_text:
                         print(f"✅ {name} Flask started successfully")
-                        bot_health[f"{name.lower()}_bot"] = "flask_started"
+                        bot_health[bot_key] = "flask_started"
                     
                     if "Telegram bot started" in line_text or "Bot polling" in line_text or "🤖 Telegram bot" in line_text:
                         print(f"✅ {name} Telegram bot started successfully")
-                        bot_health[f"{name.lower()}_bot"] = "telegram_started"
+                        bot_health[bot_key] = "telegram_started"
                     
                     if "error" in line_text.lower() or "Error" in line_text or "Exception" in line_text:
                         print(f"⚠️ {name} has error in logs")
-                        bot_health[f"{name.lower()}_bot"] = f"error_in_logs"
+                        bot_health[bot_key] = f"error_in_logs"
             
             # Check if process died
             if process.poll() is not None:
                 exit_code = process.returncode
                 status = "exited" if exit_code == 0 else f"crashed (code: {exit_code})"
                 print(f"❌ {name} {status}")
-                running_bots[f"{name.lower()}_bot"] = False
-                bot_health[f"{name.lower()}_bot"] = f"stopped (code: {exit_code})"
+                running_bots[bot_key] = False
+                bot_health[bot_key] = f"stopped (code: {exit_code})"
                 break
     
     output_thread = Thread(target=stream_output, daemon=True)
@@ -201,7 +208,7 @@ def cleanup():
     print("\n🧹 Cleaning up processes...")
     for i, proc in enumerate(processes):
         if proc and proc.poll() is None:
-            bot_name = "MAIN" if i == 0 else "RESET"
+            bot_name = "MAIN" if i == 0 else "HUNTER"
             print(f"   • Terminating {bot_name} bot...")
             try:
                 proc.terminate()
@@ -260,9 +267,13 @@ app = Flask(__name__)
 def health():
     return jsonify({"status": "healthy", "test": True}), 200
 
+@app.route('/')
+def home():
+    return jsonify({"service": "Test Hunter Bot"}), 200
+
 if __name__ == '__main__':
-    print("🚀 Test reset bot starting on port 5001")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    print("🚀 Test hunter bot starting on port 6001")
+    app.run(host='0.0.0.0', port=6001, debug=False)
 """)
         print("✅ Created test reset.py")
     
@@ -270,19 +281,21 @@ if __name__ == '__main__':
     print("• Coordinator Health: http://localhost:8080/health/runner")
     print("• Coordinator Home:   http://localhost:8080/")
     print("• Main Bot:          http://localhost:8000")
-    print("• Reset Bot Health:  http://localhost:5001/health/reset")
+    print("• Main Bot Health:   http://localhost:8000/health")
+    print("• Hunter Bot:        http://localhost:6001/hunter")
+    print("• Hunter Bot Health: http://localhost:6001/health/hunter")
     print("=" * 70)
     
     try:
         # Start main.py if it exists
         if os.path.exists("main.py"):
-            print("\n1️⃣ STARTING MAIN BOT...")
+            print("\n1️⃣ STARTING MAIN BOT (Username Swapper)...")
             processes.append(run_bot("main.py", "MAIN", 8000))
             time.sleep(15)  # Wait longer for main bot (has database init)
         
-        # Start reset.py
-        print("\n2️⃣ STARTING RESET BOT...")
-        processes.append(run_bot("reset.py", "RESET", 5001))
+        # Start reset.py (4L Hunter Bot)
+        print("\n2️⃣ STARTING HUNTER BOT (4L Username Hunter)...")
+        processes.append(run_bot("reset.py", "HUNTER", 6001))  # Port changed to 6001
         time.sleep(10)
         
         # Initial health check
@@ -292,8 +305,8 @@ if __name__ == '__main__':
         print("\n" + "=" * 70)
         print("📊 INITIAL STATUS REPORT:")
         print("=" * 70)
-        print(f"   • Main Bot:  {'✅' if running_bots['main_bot'] else '❌'} - {bot_health['main_bot']}")
-        print(f"   • Reset Bot: {'✅' if running_bots['reset_bot'] else '❌'} - {bot_health['reset_bot']}")
+        print(f"   • Main Bot:   {'✅' if running_bots['main_bot'] else '❌'} - {bot_health['main_bot']}")
+        print(f"   • Hunter Bot: {'✅' if running_bots['hunter_bot'] else '❌'} - {bot_health['hunter_bot']}")
         print(f"   • Total Running: {sum(running_bots.values())}/2 bots")
         print("=" * 70)
         print("\n📈 Monitoring logs... (Press Ctrl+C to stop)")
@@ -301,7 +314,7 @@ if __name__ == '__main__':
         
         # Keep checking bot status
         check_count = 0
-        restart_attempts = {"main_bot": 0, "reset_bot": 0}
+        restart_attempts = {"main_bot": 0, "hunter_bot": 0}
         
         while True:
             time.sleep(30)
@@ -313,8 +326,8 @@ if __name__ == '__main__':
             # Print status every 3 checks (1.5 minutes)
             if check_count % 3 == 0:
                 print(f"\n🔄 Status check #{check_count}:")
-                print(f"   • Main Bot:  {'✅' if running_bots['main_bot'] else '❌'} - {bot_health['main_bot']}")
-                print(f"   • Reset Bot: {'✅' if running_bots['reset_bot'] else '❌'} - {bot_health['reset_bot']}")
+                print(f"   • Main Bot:   {'✅' if running_bots['main_bot'] else '❌'} - {bot_health['main_bot']}")
+                print(f"   • Hunter Bot: {'✅' if running_bots['hunter_bot'] else '❌'} - {bot_health['hunter_bot']}")
                 print(f"   • Uptime: {check_count * 30} seconds")
                 
                 # Try to restart failed bots (max 3 attempts)
@@ -327,18 +340,18 @@ if __name__ == '__main__':
                     restart_attempts["main_bot"] += 1
                     time.sleep(10)
                 
-                if not running_bots["reset_bot"] and restart_attempts["reset_bot"] < 3:
-                    print("🔄 Attempting to restart Reset Bot...")
+                if not running_bots["hunter_bot"] and restart_attempts["hunter_bot"] < 3:
+                    print("🔄 Attempting to restart Hunter Bot...")
                     if len(processes) > 1 and processes[1]:
                         processes[1].terminate()
                         time.sleep(2)
-                    processes[1] = run_bot("reset.py", "RESET", 6001)
-                    restart_attempts["reset_bot"] += 1
+                    processes[1] = run_bot("reset.py", "HUNTER", 6001)
+                    restart_attempts["hunter_bot"] += 1
                     time.sleep(10)
             
             # Reset restart attempts every 30 minutes
             if check_count % 60 == 0:
-                restart_attempts = {"main_bot": 0, "reset_bot": 0}
+                restart_attempts = {"main_bot": 0, "hunter_bot": 0}
                 print("🔄 Reset restart attempt counters")
             
     except KeyboardInterrupt:
@@ -351,8 +364,8 @@ if __name__ == '__main__':
         print("\n" + "=" * 70)
         print("📊 FINAL STATUS:")
         print("=" * 70)
-        print(f"   • Main Bot:  {'✅' if running_bots['main_bot'] else '❌'} - {bot_health['main_bot']}")
-        print(f"   • Reset Bot: {'✅' if running_bots['reset_bot'] else '❌'} - {bot_health['reset_bot']}")
+        print(f"   • Main Bot:   {'✅' if running_bots['main_bot'] else '❌'} - {bot_health['main_bot']}")
+        print(f"   • Hunter Bot: {'✅' if running_bots['hunter_bot'] else '❌'} - {bot_health['hunter_bot']}")
         print(f"   • Total checks performed: {check_count if 'check_count' in locals() else 0}")
         print("=" * 70)
         
