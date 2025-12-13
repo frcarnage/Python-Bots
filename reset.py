@@ -26,7 +26,9 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ========== CONFIGURATION ==========
-BOT_TOKEN = "8522048948:AAH4DVdoM63rhxmiqRtpl_z2O0Lk6w7L3uo"
+# CHANGE THIS TO A NEW BOT TOKEN FROM @BOTFATHER
+# Get a new token for this bot at: https://t.me/BotFather
+BOT_TOKEN = "8522048948:AAGSCayCSZZF_6z2nHcGjVC7B64E3C9u6F8"  # <-- CHANGE THIS!
 BOT_PORT = int(os.environ.get('PORT', 6001))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
@@ -761,6 +763,25 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     }), 200
 
+# ========== ADD COMPATIBILITY ENDPOINTS ==========
+@app.route('/')
+def root_home():
+    """Root endpoint for compatibility"""
+    return jsonify({
+        "status": "running",
+        "service": "Instagram 4L Hunter Bot",
+        "message": "Use /hunter for hunter-specific info"
+    })
+
+@app.route('/health')
+def health_compatibility():
+    """Health endpoint for compatibility"""
+    return jsonify({
+        "status": "healthy",
+        "bot": "hunter",
+        "message": "Use /health/hunter for detailed health"
+    }), 200
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Telegram webhook endpoint"""
@@ -808,7 +829,7 @@ if __name__ == '__main__':
     print("=" * 70)
     print(f"🔑 Token: {BOT_TOKEN[:10]}...")
     print(f"🌐 Port: {BOT_PORT}")
-    print(f"🏓 Health: http://localhost:{BOT_PORT}/health")
+    print(f"🏓 Health: http://localhost:{BOT_PORT}/health/hunter")
     print("=" * 70)
     print("🎯 4L HUNTING FEATURES:")
     print("• Real-time username checking")
