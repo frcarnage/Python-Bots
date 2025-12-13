@@ -65,7 +65,7 @@ def home():
             },
             "reset_bot": {
                 "port": 5001,
-                "health_url": "http://localhost:5001/health/reset",
+                "health_url": "http://localhost:6001/health/reset",
                 "type": "Instagram Reset Bot",
                 "status": bot_health["reset_bot"]
             }
@@ -99,7 +99,7 @@ def check_bot_health():
     
     try:
         # Check reset bot
-        response = requests.get("http://localhost:5001/health/reset", timeout=5)
+        response = requests.get("http://localhost:6001/health/hunter", timeout=5)
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "healthy":
@@ -256,7 +256,7 @@ from flask import Flask, jsonify
 import time
 app = Flask(__name__)
 
-@app.route('/health/reset')
+@app.route('/health/hunter')
 def health():
     return jsonify({"status": "healthy", "test": True}), 200
 
@@ -332,7 +332,7 @@ if __name__ == '__main__':
                     if len(processes) > 1 and processes[1]:
                         processes[1].terminate()
                         time.sleep(2)
-                    processes[1] = run_bot("reset.py", "RESET", 5001)
+                    processes[1] = run_bot("reset.py", "RESET", 6001)
                     restart_attempts["reset_bot"] += 1
                     time.sleep(10)
             
