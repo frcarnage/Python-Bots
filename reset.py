@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MEGA UNIVERSAL USERNAME HUNTER - COMPLETE VERSION
-Multiple platforms with Discord API and all Flask endpoints
+WITH INSTAGRAM + Discord API + All Flask endpoints
 """
 
 import json
@@ -28,6 +28,16 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
 # ========== DISCORD CONFIG ==========
 DISCORD_TOKEN = "MTM1MjY4NDEwOTIwMTE1MDA0OQ.GfGOZx.qK42V-v4lJi4WDH5AYbdpDfYWZk07d8-hkoOPo"
+
+# ========== EMAIL LIST FOR INSTAGRAM SIGNUP ==========
+EMAIL_LIST = [
+    "d78ma6bwd8ps41h@comfythings.com",
+    "4kv24j1qdkcr90t@comfythings.com",
+    "duja0vg0i0dp464@comfythings.com",
+    "hbkfrgrx0c04lnp@comfythings.com",
+    "yr4ibhzlfy3y6cw@comfythings.com",
+    "q0s3j3su1syhzpt@comfythings.com"
+]
 
 # ========== FLASK APP ==========
 app = Flask(__name__)
@@ -431,6 +441,177 @@ class BaseHunter:
             'platform': self.platform,
             'length_pref': self.length_pref
         }
+
+# ========== INSTAGRAM HUNTER (WORKING SIGNUP METHOD) ==========
+class InstagramHunter(BaseHunter):
+    """Instagram username hunter using signup attempt method"""
+    
+    def __init__(self, chat_id):
+        super().__init__(chat_id, 'instagram', '4L')
+        self.email_index = 0
+        self.session = requests.Session()
+        self.last_request_time = 0
+    
+    def get_next_email(self):
+        """Get next email from the list"""
+        email = EMAIL_LIST[self.email_index]
+        self.email_index = (self.email_index + 1) % len(EMAIL_LIST)
+        return email
+    
+    def save_session(self):
+        conn = sqlite3.connect('universal_hunter.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO instagram_sessions 
+            (chat_id, session_id, status, threads)
+            VALUES (?, ?, 'running', ?)
+        ''', (self.chat_id, self.session_id, self.threads))
+        conn.commit()
+        conn.close()
+    
+    def update_stats(self):
+        conn = sqlite3.connect('universal_hunter.db')
+        cursor = conn.cursor()
+        elapsed = time.time() - self.stats['start_time']
+        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
+        cursor.execute('''
+            UPDATE instagram_sessions 
+            SET checked = ?, available = ?, taken = ?, errors = ?,
+                average_speed = ?, threads = ?
+            WHERE session_id = ?
+        ''', (
+            self.stats['checked'],
+            self.stats['available'],
+            self.stats['taken'],
+            self.stats['errors'],
+            speed,
+            self.threads,
+            self.session_id
+        ))
+        conn.commit()
+        conn.close()
+    
+    def save_username(self, username):
+        conn = sqlite3.connect('universal_hunter.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO instagram_found 
+            (session_id, username, length)
+            VALUES (?, ?, ?)
+        ''', (self.session_id, username, len(username)))
+        conn.commit()
+        conn.close()
+    
+    def generate_username(self):
+        """Generate 4L Instagram username"""
+        # Focus on clean 4-letter usernames
+        patterns = [
+            lambda: ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=4)),  # Letters only
+            lambda: ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=3)) + random.choice('0123456789'),  # 3 letters + number
+            lambda: ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=2)) + random.choice('._') + random.choice('abcdefghijklmnopqrstuvwxyz'),
+        ]
+        
+        while True:
+            username = random.choice(patterns)()
+            if username[0] not in '._' and username not in self.used_usernames:
+                self.used_usernames.add(username)
+                if len(self.used_usernames) > 1000:
+                    self.used_usernames.remove(next(iter(self.used_usernames)))
+                return username
+    
+    def check_username(self, username):
+        """Check Instagram username using signup attempt method"""
+        # Rate limiting
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        base_delay = 5  # 5 seconds between attempts
+        if time_since_last < base_delay:
+            wait_time = base_delay - time_since_last
+            time.sleep(wait_time)
+        
+        try:
+            email = self.get_next_email()
+            
+            # Headers for Instagram signup
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-IG-App-ID': '936619743392459',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Origin': 'https://www.instagram.com',
+                'Referer': 'https://www.instagram.com/accounts/emailsignup/',
+            }
+            
+            # Signup endpoint
+            signup_url = 'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/attempt/'
+            
+            # Signup data
+            signup_data = {
+                'email': email,
+                'username': username,
+                'first_name': 'Test',
+                'opt_into_one_tap': 'false',
+                'enc_password': '#PWD_INSTAGRAM_BROWSER:0:0:Test123!',
+                'client_id': 'W6mHTAAEAAHsVu2N0wGEgANGkTyZ',
+                'seamless_login_enabled': '1',
+                'tos_version': 'row',
+                'force_sign_up_code': '',
+            }
+            
+            response = self.session.post(
+                signup_url,
+                headers=headers,
+                data=signup_data,
+                timeout=15,
+                verify=False
+            )
+            
+            response_text = response.text
+            
+            self.last_request_time = time.time()
+            
+            # Analyze response
+            if response.status_code == 200:
+                if '{"message":"feedback_required","spam":true' in response_text:
+                    # Rate limited
+                    logger.warning(f"Instagram rate limited for {username}")
+                    return False
+                
+                elif '"errors": {"username":' in response_text or '"code": "username_is_taken"' in response_text:
+                    # Username is taken
+                    return False
+                
+                elif 'user' in response_text.lower() or 'id' in response_text.lower():
+                    # Some other user error
+                    return False
+                
+                else:
+                    # Username appears to be available!
+                    if 'error' not in response_text.lower() and 'taken' not in response_text.lower():
+                        return True
+                    else:
+                        return False
+                        
+            elif response.status_code == 429:
+                # Too many requests
+                logger.warning("Instagram 429 Rate Limited")
+                time.sleep(60)
+                return False
+                
+            elif response.status_code == 400:
+                # Bad request
+                return False
+                    
+            else:
+                logger.warning(f"Instagram unexpected status: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Instagram check error: {e}")
+            return False
 
 # ========== TELEGRAM HUNTER ==========
 class TelegramHunter(BaseHunter):
@@ -1045,7 +1226,7 @@ def send_welcome(message):
 
 🏆 *Multiple Platforms Support:*
 
-📸 Instagram: /hunt (4L only - existing)
+📸 Instagram: /hunt (4L only)
 💬 Telegram: /htele (4L + 5L)
 🐦 Twitter/X: /hx (4L + 5L)
 🎵 TikTok: /htiktok (4L + 5L)
@@ -1062,6 +1243,116 @@ def send_welcome(message):
 🚀 *Run multiple hunters at once!*
 """
     bot.reply_to(message, welcome_text, parse_mode='Markdown')
+
+# ========== INSTAGRAM HUNTER COMMANDS ==========
+@bot.message_handler(commands=['hunt'])
+def start_instagram_hunt(message):
+    """Start Instagram username hunting"""
+    chat_id = message.chat.id
+    
+    if chat_id in instagram_hunters and instagram_hunters[chat_id].running:
+        bot.reply_to(message, "⚠️ Already hunting Instagram usernames! Use /stopinsta to stop.")
+        return
+    
+    bot.send_message(
+        chat_id,
+        "📸 *Instagram Username Hunter*\n\n"
+        "Starting Instagram 4L username hunting...",
+        parse_mode='Markdown'
+    )
+    
+    # Create and start hunter
+    hunter = InstagramHunter(chat_id)
+    
+    if hunter.start_hunting():
+        instagram_hunters[chat_id] = hunter
+        
+        bot.send_message(
+            chat_id,
+            f"✅ *Instagram Hunter Started!*\n\n"
+            f"🏆 Platform: Instagram\n"
+            f"🔢 Target: 4L usernames only\n"
+            f"🧵 Threads: 1\n"
+            f"🆔 Session: `{hunter.session_id}`\n"
+            f"⚡ Checks: ~10-20/hour (safe mode)\n\n"
+            f"*Method:* Signup attempt (reliable)\n"
+            f"Use /statinsta for stats\n"
+            f"Use /stopinsta to stop",
+            parse_mode='Markdown'
+        )
+    else:
+        bot.send_message(chat_id, "❌ Failed to start Instagram hunter.")
+
+@bot.message_handler(commands=['statinsta'])
+def instagram_stats(message):
+    """Show Instagram hunting stats"""
+    chat_id = message.chat.id
+    
+    if chat_id not in instagram_hunters or not instagram_hunters[chat_id].running:
+        bot.reply_to(message, "❌ No active Instagram hunting session.")
+        return
+    
+    hunter = instagram_hunters[chat_id]
+    stats = hunter.get_stats()
+    
+    stats_message = f"""
+📊 *Instagram Hunter Stats*
+
+⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
+🔍 Checked: {stats['checked']:,}
+✅ Available: {stats['available']:,}
+❌ Taken: {stats['taken']:,}
+🔧 Errors: {stats['errors']:,}
+
+⚡ Speed: {stats['speed']:.2f}/sec
+🎯 Success Rate: {stats['success_rate']:.2f}%
+
+📈 Last Found: `{stats['last_available'] or 'None'}`
+🏷️ Session: `{stats['session_id']}`
+🔢 Target: 4L only
+
+🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
+"""
+    
+    bot.reply_to(message, stats_message, parse_mode='Markdown')
+
+@bot.message_handler(commands=['stopinsta'])
+def stop_instagram_hunt(message):
+    """Stop Instagram hunting"""
+    chat_id = message.chat.id
+    
+    if chat_id not in instagram_hunters or not instagram_hunters[chat_id].running:
+        bot.reply_to(message, "❌ No active Instagram hunting session.")
+        return
+    
+    hunter = instagram_hunters[chat_id]
+    
+    if hunter.stop_hunting():
+        stats = hunter.get_stats()
+        
+        final_message = f"""
+🛑 *Instagram Hunter Stopped*
+
+📊 *Final Stats:*
+
+⏱️ Duration: {stats['elapsed']:.0f}s
+🔍 Checked: {stats['checked']:,}
+✅ Available: {stats['available']:,}
+❌ Taken: {stats['taken']:,}
+
+⚡ Speed: {stats['speed']:.2f}/sec
+🎯 Success Rate: {stats['success_rate']:.2f}%
+
+🏷️ Session: `{stats['session_id']}`
+🔢 Target: 4L only
+
+💾 Usernames saved to database.
+"""
+        
+        bot.send_message(chat_id, final_message, parse_mode='Markdown')
+        del instagram_hunters[chat_id]
+    else:
+        bot.reply_to(message, "❌ Failed to stop Instagram hunter.")
 
 # ========== TELEGRAM HUNTER COMMANDS ==========
 @bot.message_handler(commands=['htele'])
@@ -1793,7 +2084,7 @@ if __name__ == '__main__':
     print(f"📈 Details: http://localhost:{BOT_PORT}/stats")
     print("=" * 70)
     print("🎯 SUPPORTED PLATFORMS:")
-    print("• Instagram: /hunt (4L) - Use your existing hunter")
+    print("• Instagram: /hunt (4L) - INCLUDED!")
     print("• Telegram: /htele (4L+5L)")
     print("• Twitter/X: /hx (4L+5L)")
     print("• TikTok: /htiktok (4L+5L)")
@@ -1801,8 +2092,9 @@ if __name__ == '__main__':
     print("• Discord: /hdiscord (4L+5L) - WORKING DISCORD API!")
     print("=" * 70)
     print("🔐 Discord Token: Loaded ✓")
+    print("📸 Instagram: Included with signup method ✓")
     print("🌐 All Flask endpoints added ✓")
-    print("💡 Run multiple hunters simultaneously!")
+    print("💡 Run ALL 6 hunters simultaneously!")
     print("=" * 70)
     
     # Start Flask in background
