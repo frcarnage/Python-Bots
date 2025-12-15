@@ -736,9 +736,15 @@ def decrypt_session(encrypted_session):
 # ==================== DATABASE CONNECTION MANAGEMENT ====================
 def get_db_connection():
     """Get database connection with thread safety"""
-    conn = sqlite3.connect('users.db', check_same_thread=False, timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect('users.db', check_same_thread=False, timeout=10)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        print(f"❌ Database connection error: {e}")
+        # Try to reconnect
+        time.sleep(1)
+        return get_db_connection()
 
 def execute_query(query, params=(), commit=False):
     """Execute SQL query with thread safety"""
@@ -784,195 +790,204 @@ def init_database():
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Users table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    last_name TEXT,
-                    approved INTEGER DEFAULT 0,
-                    approved_until TEXT DEFAULT NULL,
-                    join_date TEXT,
-                    last_active TEXT,
-                    is_banned INTEGER DEFAULT 0,
-                    ban_reason TEXT DEFAULT NULL,
-                    is_admin INTEGER DEFAULT 0,
-                    is_mm INTEGER DEFAULT 0,
-                    referral_code TEXT UNIQUE,
-                    referred_by INTEGER DEFAULT NULL,
-                    total_referrals INTEGER DEFAULT 0,
-                    free_swaps_earned INTEGER DEFAULT 0,
-                    credits INTEGER DEFAULT 100,
-                    tier TEXT DEFAULT 'free',
-                    subscription_until TEXT DEFAULT NULL,
-                    total_swaps INTEGER DEFAULT 0,
-                    successful_swaps INTEGER DEFAULT 0,
-                    join_method TEXT DEFAULT 'direct',
-                    channels_joined INTEGER DEFAULT 0,
-                    main_session_encrypted TEXT DEFAULT NULL,
-                    main_username TEXT DEFAULT NULL,
-                    target_session_encrypted TEXT DEFAULT NULL,
-                    target_username TEXT DEFAULT NULL,
-                    backup_session_encrypted TEXT DEFAULT NULL,
-                    backup_username TEXT DEFAULT NULL,
-                    vouch_score INTEGER DEFAULT 0,
-                    positive_vouches INTEGER DEFAULT 0,
-                    negative_vouches INTEGER DEFAULT 0,
-                    total_transactions INTEGER DEFAULT 0,
-                    claimer_session_encrypted TEXT DEFAULT NULL,  # NEW: For username claimer
-                    claimer_username TEXT DEFAULT NULL           # NEW: For username claimer
-                )
-            ''')
+            # Check if tables exist
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+            tables_exist = cursor.fetchone() is not None
             
-            # Achievements table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS achievements (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    achievement_id TEXT,
-                    achievement_name TEXT,
-                    achievement_emoji TEXT,
-                    unlocked_at TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Swap history table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS swap_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    target_username TEXT,
-                    status TEXT,
-                    swap_time TEXT,
-                    error_message TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Referral tracking
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS referral_tracking (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    referrer_id INTEGER,
-                    referred_id INTEGER,
-                    reward_claimed INTEGER DEFAULT 0,
-                    joined_at TEXT,
-                    FOREIGN KEY (referrer_id) REFERENCES users (user_id),
-                    FOREIGN KEY (referred_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Marketplace listings
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS marketplace_listings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    listing_id TEXT UNIQUE,
-                    seller_id INTEGER,
-                    username TEXT,
-                    price REAL,
-                    currency TEXT DEFAULT 'inr',
-                    listing_type TEXT DEFAULT 'sale',
-                    sale_type TEXT DEFAULT 'fixed',
-                    status TEXT DEFAULT 'active',
-                    description TEXT,
-                    seller_session_encrypted TEXT DEFAULT NULL,
-                    verified_at TEXT DEFAULT NULL,
-                    created_at TEXT,
-                    expires_at TEXT,
-                    views INTEGER DEFAULT 0,
-                    bids INTEGER DEFAULT 0,
-                    highest_bid REAL DEFAULT 0,
-                    highest_bidder INTEGER DEFAULT NULL,
-                    auction_end_time TEXT DEFAULT NULL,
-                    min_increment REAL DEFAULT 100,
-                    current_bid REAL DEFAULT 0,
-                    buy_now_price REAL DEFAULT 0,
-                    FOREIGN KEY (seller_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Auction bids
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS auction_bids (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    listing_id TEXT,
-                    bidder_id INTEGER,
-                    bid_amount REAL,
-                    bid_time TEXT,
-                    is_winning INTEGER DEFAULT 0,
-                    FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
-                    FOREIGN KEY (bidder_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Marketplace swaps
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS marketplace_swaps (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    swap_id TEXT UNIQUE,
-                    listing_id TEXT,
-                    seller_id INTEGER,
-                    buyer_id INTEGER,
-                    mm_id INTEGER DEFAULT NULL,
-                    amount REAL,
-                    currency TEXT,
-                    status TEXT DEFAULT 'created',
-                    payment_method TEXT,
-                    payment_proof TEXT,
-                    seller_session_encrypted TEXT DEFAULT NULL,
-                    buyer_session_encrypted TEXT DEFAULT NULL,
-                    swap_status TEXT DEFAULT 'pending',
-                    created_at TEXT,
-                    payment_received_at TEXT,
-                    swap_completed_at TEXT,
-                    released_at TEXT,
-                    refunded_at TEXT,
-                    dispute_reason TEXT,
-                    notes TEXT,
-                    vouch_requested INTEGER DEFAULT 0,
-                    vouch_given INTEGER DEFAULT 0,
-                    vouch_type TEXT DEFAULT NULL,
-                    vouch_comment TEXT DEFAULT NULL,
-                    FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
-                    FOREIGN KEY (seller_id) REFERENCES users (user_id),
-                    FOREIGN KEY (buyer_id) REFERENCES users (user_id),
-                    FOREIGN KEY (mm_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Vouches
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS vouches (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    swap_id TEXT,
-                    user_id INTEGER,
-                    vouch_for INTEGER,
-                    vouch_type TEXT,
-                    comment TEXT,
-                    vouch_time TEXT,
-                    verified INTEGER DEFAULT 0,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id),
-                    FOREIGN KEY (vouch_for) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Middlemen
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS middlemen (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER UNIQUE,
-                    verified_by INTEGER,
-                    verified_at TEXT,
-                    status TEXT DEFAULT 'active',
-                    total_swaps INTEGER DEFAULT 0,
-                    successful_swaps INTEGER DEFAULT 0,
-                    rating REAL DEFAULT 0.0,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id),
-                    FOREIGN KEY (verified_by) REFERENCES users (user_id)
-                )
-            ''')
+            if not tables_exist:
+                print("📦 Creating database tables...")
+                
+                # Users table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT,
+                        first_name TEXT,
+                        last_name TEXT,
+                        approved INTEGER DEFAULT 0,
+                        approved_until TEXT DEFAULT NULL,
+                        join_date TEXT,
+                        last_active TEXT,
+                        is_banned INTEGER DEFAULT 0,
+                        ban_reason TEXT DEFAULT NULL,
+                        is_admin INTEGER DEFAULT 0,
+                        is_mm INTEGER DEFAULT 0,
+                        referral_code TEXT UNIQUE,
+                        referred_by INTEGER DEFAULT NULL,
+                        total_referrals INTEGER DEFAULT 0,
+                        free_swaps_earned INTEGER DEFAULT 0,
+                        credits INTEGER DEFAULT 100,
+                        tier TEXT DEFAULT 'free',
+                        subscription_until TEXT DEFAULT NULL,
+                        total_swaps INTEGER DEFAULT 0,
+                        successful_swaps INTEGER DEFAULT 0,
+                        join_method TEXT DEFAULT 'direct',
+                        channels_joined INTEGER DEFAULT 0,
+                        main_session_encrypted TEXT DEFAULT NULL,
+                        main_username TEXT DEFAULT NULL,
+                        target_session_encrypted TEXT DEFAULT NULL,
+                        target_username TEXT DEFAULT NULL,
+                        backup_session_encrypted TEXT DEFAULT NULL,
+                        backup_username TEXT DEFAULT NULL,
+                        vouch_score INTEGER DEFAULT 0,
+                        positive_vouches INTEGER DEFAULT 0,
+                        negative_vouches INTEGER DEFAULT 0,
+                        total_transactions INTEGER DEFAULT 0,
+                        claimer_session_encrypted TEXT DEFAULT NULL,
+                        claimer_username TEXT DEFAULT NULL
+                    )
+                ''')
+                
+                # Achievements table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS achievements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
+                        achievement_id TEXT,
+                        achievement_name TEXT,
+                        achievement_emoji TEXT,
+                        unlocked_at TEXT,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Swap history table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS swap_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
+                        target_username TEXT,
+                        status TEXT,
+                        swap_time TEXT,
+                        error_message TEXT,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Referral tracking
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS referral_tracking (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        referrer_id INTEGER,
+                        referred_id INTEGER,
+                        reward_claimed INTEGER DEFAULT 0,
+                        joined_at TEXT,
+                        FOREIGN KEY (referrer_id) REFERENCES users (user_id),
+                        FOREIGN KEY (referred_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Marketplace listings
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS marketplace_listings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        listing_id TEXT UNIQUE,
+                        seller_id INTEGER,
+                        username TEXT,
+                        price REAL,
+                        currency TEXT DEFAULT 'inr',
+                        listing_type TEXT DEFAULT 'sale',
+                        sale_type TEXT DEFAULT 'fixed',
+                        status TEXT DEFAULT 'active',
+                        description TEXT,
+                        seller_session_encrypted TEXT DEFAULT NULL,
+                        verified_at TEXT DEFAULT NULL,
+                        created_at TEXT,
+                        expires_at TEXT,
+                        views INTEGER DEFAULT 0,
+                        bids INTEGER DEFAULT 0,
+                        highest_bid REAL DEFAULT 0,
+                        highest_bidder INTEGER DEFAULT NULL,
+                        auction_end_time TEXT DEFAULT NULL,
+                        min_increment REAL DEFAULT 100,
+                        current_bid REAL DEFAULT 0,
+                        buy_now_price REAL DEFAULT 0,
+                        FOREIGN KEY (seller_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Auction bids
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS auction_bids (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        listing_id TEXT,
+                        bidder_id INTEGER,
+                        bid_amount REAL,
+                        bid_time TEXT,
+                        is_winning INTEGER DEFAULT 0,
+                        FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
+                        FOREIGN KEY (bidder_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Marketplace swaps
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS marketplace_swaps (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        swap_id TEXT UNIQUE,
+                        listing_id TEXT,
+                        seller_id INTEGER,
+                        buyer_id INTEGER,
+                        mm_id INTEGER DEFAULT NULL,
+                        amount REAL,
+                        currency TEXT,
+                        status TEXT DEFAULT 'created',
+                        payment_method TEXT,
+                        payment_proof TEXT,
+                        seller_session_encrypted TEXT DEFAULT NULL,
+                        buyer_session_encrypted TEXT DEFAULT NULL,
+                        swap_status TEXT DEFAULT 'pending',
+                        created_at TEXT,
+                        payment_received_at TEXT,
+                        swap_completed_at TEXT,
+                        released_at TEXT,
+                        refunded_at TEXT,
+                        dispute_reason TEXT,
+                        notes TEXT,
+                        vouch_requested INTEGER DEFAULT 0,
+                        vouch_given INTEGER DEFAULT 0,
+                        vouch_type TEXT DEFAULT NULL,
+                        vouch_comment TEXT DEFAULT NULL,
+                        FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
+                        FOREIGN KEY (seller_id) REFERENCES users (user_id),
+                        FOREIGN KEY (buyer_id) REFERENCES users (user_id),
+                        FOREIGN KEY (mm_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Vouches
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS vouches (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        swap_id TEXT,
+                        user_id INTEGER,
+                        vouch_for INTEGER,
+                        vouch_type TEXT,
+                        comment TEXT,
+                        vouch_time TEXT,
+                        verified INTEGER DEFAULT 0,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id),
+                        FOREIGN KEY (vouch_for) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Middlemen
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS middlemen (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER UNIQUE,
+                        verified_by INTEGER,
+                        verified_at TEXT,
+                        status TEXT DEFAULT 'active',
+                        total_swaps INTEGER DEFAULT 0,
+                        successful_swaps INTEGER DEFAULT 0,
+                        rating REAL DEFAULT 0.0,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id),
+                        FOREIGN KEY (verified_by) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                print("✅ All tables created successfully")
             
             # Check if admin exists
             cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
@@ -999,6 +1014,7 @@ def init_database():
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "active"
                 ))
+                print("✅ Admin user created")
             
             conn.commit()
             conn.close()
@@ -1007,6 +1023,133 @@ def init_database():
             
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
+        import traceback
+        traceback.print_exc()
+
+# ==================== AUCTION CHECKER THREAD ====================
+def auction_checker_thread():
+    """Background thread to check auction endings"""
+    while True:
+        try:
+            # Check if tables exist first
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_listings'")
+                if not cursor.fetchone():
+                    print("⚠️ marketplace_listings table doesn't exist yet, waiting...")
+                    conn.close()
+                    time.sleep(30)
+                    continue
+                conn.close()
+            except:
+                time.sleep(30)
+                continue
+            
+            # Now check auction endings
+            ended_auctions = execute_query('''
+                SELECT ml.*, u.username as seller_username
+                FROM marketplace_listings ml
+                JOIN users u ON ml.seller_id = u.user_id
+                WHERE ml.sale_type = 'auction' AND ml.status = 'active' 
+                AND ml.auction_end_time IS NOT NULL 
+                AND ml.auction_end_time < ?
+            ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+            
+            for auction in ended_auctions:
+                if auction["highest_bidder"]:
+                    # Auction sold - create swap
+                    swap_id = generate_swap_id()
+                    execute_query('''
+                        INSERT INTO marketplace_swaps 
+                        (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        swap_id, auction["listing_id"], auction["seller_id"], auction["highest_bidder"],
+                        auction["current_bid"], auction["currency"], "created",
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ), commit=True)
+                    
+                    # Update listing status
+                    execute_query(
+                        "UPDATE marketplace_listings SET status = 'reserved' WHERE listing_id = ?",
+                        (auction["listing_id"],), commit=True
+                    )
+                    
+                    # Notify winner
+                    try:
+                        bot.send_message(
+                            auction["highest_bidder"],
+                            f"🎉 *You won the auction!*\n\n"
+                            f"Username: @{auction['username']}\n"
+                            f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
+                            f"Swap ID: `{swap_id}`\n\n"
+                            f"Middleman will contact you shortly.",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                    
+                    # Notify seller
+                    try:
+                        bot.send_message(
+                            auction["seller_id"],
+                            f"💰 *Auction Ended - Sold!*\n\n"
+                            f"Username: @{auction['username']}\n"
+                            f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
+                            f"Buyer: User {auction['highest_bidder']}\n"
+                            f"Swap ID: `{swap_id}`\n\n"
+                            f"Wait for middleman instructions.",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                    
+                    # Notify admin group
+                    try:
+                        bot.send_message(
+                            ADMIN_GROUP_ID,
+                            f"🏆 *AUCTION ENDED - SOLD!*\n\n"
+                            f"Listing: `{auction['listing_id']}`\n"
+                            f"Username: `{auction['username']}`\n"
+                            f"Seller: {auction['seller_username']}\n"
+                            f"Buyer: {auction['highest_bidder']}\n"
+                            f"Price: {auction['current_bid']} {auction['currency']}\n"
+                            f"Swap ID: `{swap_id}`",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                else:
+                    # No bids - mark as expired
+                    execute_query(
+                        "UPDATE marketplace_listings SET status = 'expired' WHERE listing_id = ?",
+                        (auction["listing_id"],), commit=True
+                    )
+                    
+                    # Notify seller
+                    try:
+                        bot.send_message(
+                            auction["seller_id"],
+                            f"⏰ *Auction Ended - No Bids*\n\n"
+                            f"Username: @{auction['username']}\n"
+                            f"No bids were placed on your auction.\n"
+                            f"You can relist it with /sell",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+            
+            if ended_auctions:
+                print(f"✅ Processed {len(ended_auctions)} ended auctions")
+            
+            time.sleep(60)  # Check every minute
+            
+        except Exception as e:
+            print(f"❌ Error checking auction endings: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(60)
 
 # ==================== BASIC HELPER FUNCTIONS ====================
 def is_admin(user_id):
