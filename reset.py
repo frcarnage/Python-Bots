@@ -872,26 +872,59 @@ class TikTokHunter(BaseHunter):
                 return username
     
     def check_username(self, username):
-        """Check TikTok username"""
+        """Check TikTok username - FIXED VERSION"""
         try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+            }
+            
             response = requests.get(
                 f'https://www.tiktok.com/@{username}',
                 headers=headers,
-                timeout=5,
-                allow_redirects=False
+                timeout=10,
+                allow_redirects=False,
+                verify=False
             )
-            # TikTok shows 404 for available usernames
-            if response.status_code == 404:
-                return True
-            elif response.status_code == 200:
-                # Check for "Couldn't find this account"
-                page_text = response.text.lower()
-                if 'couldn\'t find' in page_text or 'not found' in page_text:
-                    return True
+            
+            # TikTok returns 200 even for non-existent accounts
+            # We need to check the content
+            if response.status_code == 200:
+                content = response.text.lower()
+                
+                # Check for indicators that username doesn't exist
+                if 'couldn\'t find this account' in content or \
+                   'user_not_found' in content or \
+                   'page_not_found' in content or \
+                   'account not found' in content or \
+                   'this page is not available' in content:
+                    return True  # Available
+                
+                # If page contains user data, it's taken
+                if 'user-post' in content or 'tiktok-user' in content or \
+                   'profile-container' in content or 'follower-count' in content:
+                    return False  # Taken
+                
+                # Default: if we can't tell, assume taken
                 return False
-            return False
-        except:
+                
+            elif response.status_code == 404:
+                return True  # Available
+            else:
+                logger.info(f"TikTok {username}: Status {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"TikTok check error: {e}")
             return False
 
 # ========== YOUTUBE HUNTER ==========
@@ -973,16 +1006,40 @@ class YouTubeHunter(BaseHunter):
     def check_username(self, username):
         """Check YouTube username"""
         try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            }
+            
             response = requests.get(
                 f'https://www.youtube.com/@{username}',
                 headers=headers,
-                timeout=5,
-                allow_redirects=False
+                timeout=8,
+                allow_redirects=True
             )
-            # YouTube redirects to /c/ for custom URLs, but 404 means not taken
-            return response.status_code == 404
-        except:
+            
+            # Check content for 404 page
+            content = response.text.lower()
+            
+            # YouTube 404 indicators
+            if response.status_code == 404 or \
+               '404' in content or \
+               'page not found' in content or \
+               'this page is not available' in content or \
+               'could not find' in content or \
+               'doesn\'t exist' in content:
+                return True  # Available
+            
+            # If we get a successful page with user content, it's taken
+            if 'channel' in content or 'subscriber' in content or 'youtube-user' in content:
+                return False  # Taken
+            
+            # Default: assume taken
+            return False
+            
+        except Exception as e:
+            logger.error(f"YouTube check error: {e}")
             return False
 
 # ========== DISCORD HUNTER (FIXED WITH REAL API) ==========
@@ -1691,6 +1748,77 @@ def process_tiktok_length(message):
     else:
         bot.send_message(chat_id, "❌ Failed to start TikTok hunter.")
 
+@bot.message_handler(commands=['stattiktok'])
+def tiktok_stats(message):
+    """Show TikTok hunting stats"""
+    chat_id = message.chat.id
+    
+    if chat_id not in tiktok_hunters or not tiktok_hunters[chat_id].running:
+        bot.reply_to(message, "❌ No active TikTok hunting session.")
+        return
+    
+    hunter = tiktok_hunters[chat_id]
+    stats = hunter.get_stats()
+    
+    stats_message = f"""
+📊 *TikTok Hunter Stats*
+
+⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
+🔍 Checked: {stats['checked']:,}
+✅ Available: {stats['available']:,}
+❌ Taken: {stats['taken']:,}
+🔧 Errors: {stats['errors']:,}
+
+⚡ Speed: {stats['speed']:.2f}/sec
+🎯 Success Rate: {stats['success_rate']:.2f}%
+
+📈 Last Found: `{stats['last_available'] or 'None'}`
+🏷️ Session: `{stats['session_id']}`
+🔢 Lengths: {stats['length_pref']}
+
+🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
+"""
+    
+    bot.reply_to(message, stats_message, parse_mode='Markdown')
+
+@bot.message_handler(commands=['stoptiktok'])
+def stop_tiktok_hunt(message):
+    """Stop TikTok hunting"""
+    chat_id = message.chat.id
+    
+    if chat_id not in tiktok_hunters or not tiktok_hunters[chat_id].running:
+        bot.reply_to(message, "❌ No active TikTok hunting session.")
+        return
+    
+    hunter = tiktok_hunters[chat_id]
+    
+    if hunter.stop_hunting():
+        stats = hunter.get_stats()
+        
+        final_message = f"""
+🛑 *TikTok Hunter Stopped*
+
+📊 *Final Stats:*
+
+⏱️ Duration: {stats['elapsed']:.0f}s
+🔍 Checked: {stats['checked']:,}
+✅ Available: {stats['available']:,}
+❌ Taken: {stats['taken']:,}
+
+⚡ Speed: {stats['speed']:.2f}/sec
+🎯 Success Rate: {stats['success_rate']:.2f}%
+
+🏷️ Session: `{stats['session_id']}`
+🔢 Lengths: {stats['length_pref']}
+
+💾 Usernames saved to database.
+"""
+        
+        bot.send_message(chat_id, final_message, parse_mode='Markdown')
+        del tiktok_hunters[chat_id]
+    else:
+        bot.reply_to(message, "❌ Failed to stop TikTok hunter.")
+
 # ========== YOUTUBE HUNTER COMMANDS ==========
 @bot.message_handler(commands=['hyoutube'])
 def start_youtube_hunt(message):
@@ -1761,6 +1889,77 @@ def process_youtube_length(message):
         )
     else:
         bot.send_message(chat_id, "❌ Failed to start YouTube hunter.")
+
+@bot.message_handler(commands=['statyoutube'])
+def youtube_stats(message):
+    """Show YouTube hunting stats"""
+    chat_id = message.chat.id
+    
+    if chat_id not in youtube_hunters or not youtube_hunters[chat_id].running:
+        bot.reply_to(message, "❌ No active YouTube hunting session.")
+        return
+    
+    hunter = youtube_hunters[chat_id]
+    stats = hunter.get_stats()
+    
+    stats_message = f"""
+📊 *YouTube Hunter Stats*
+
+⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
+🔍 Checked: {stats['checked']:,}
+✅ Available: {stats['available']:,}
+❌ Taken: {stats['taken']:,}
+🔧 Errors: {stats['errors']:,}
+
+⚡ Speed: {stats['speed']:.2f}/sec
+🎯 Success Rate: {stats['success_rate']:.2f}%
+
+📈 Last Found: `{stats['last_available'] or 'None'}`
+🏷️ Session: `{stats['session_id']}`
+🔢 Lengths: {stats['length_pref']}
+
+🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
+"""
+    
+    bot.reply_to(message, stats_message, parse_mode='Markdown')
+
+@bot.message_handler(commands=['stopyoutube'])
+def stop_youtube_hunt(message):
+    """Stop YouTube hunting"""
+    chat_id = message.chat.id
+    
+    if chat_id not in youtube_hunters or not youtube_hunters[chat_id].running:
+        bot.reply_to(message, "❌ No active YouTube hunting session.")
+        return
+    
+    hunter = youtube_hunters[chat_id]
+    
+    if hunter.stop_hunting():
+        stats = hunter.get_stats()
+        
+        final_message = f"""
+🛑 *YouTube Hunter Stopped*
+
+📊 *Final Stats:*
+
+⏱️ Duration: {stats['elapsed']:.0f}s
+🔍 Checked: {stats['checked']:,}
+✅ Available: {stats['available']:,}
+❌ Taken: {stats['taken']:,}
+
+⚡ Speed: {stats['speed']:.2f}/sec
+🎯 Success Rate: {stats['success_rate']:.2f}%
+
+🏷️ Session: `{stats['session_id']}`
+🔢 Lengths: {stats['length_pref']}
+
+💾 Usernames saved to database.
+"""
+        
+        bot.send_message(chat_id, final_message, parse_mode='Markdown')
+        del youtube_hunters[chat_id]
+    else:
+        bot.reply_to(message, "❌ Failed to stop YouTube hunter.")
 
 # ========== DISCORD HUNTER COMMANDS ==========
 @bot.message_handler(commands=['hdiscord'])
@@ -1901,6 +2100,111 @@ def stop_discord_hunt(message):
     else:
         bot.reply_to(message, "❌ Failed to stop Discord hunter.")
 
+# ========== ALL HUNTERS COMMAND ==========
+@bot.message_handler(commands=['allstats'])
+def all_stats(message):
+    """Show stats for all active hunters"""
+    chat_id = message.chat.id
+    
+    active_hunters = []
+    
+    # Check all platforms
+    if chat_id in instagram_hunters and instagram_hunters[chat_id].running:
+        active_hunters.append(('Instagram', instagram_hunters[chat_id]))
+    if chat_id in telegram_hunters and telegram_hunters[chat_id].running:
+        active_hunters.append(('Telegram', telegram_hunters[chat_id]))
+    if chat_id in twitter_hunters and twitter_hunters[chat_id].running:
+        active_hunters.append(('Twitter/X', twitter_hunters[chat_id]))
+    if chat_id in tiktok_hunters and tiktok_hunters[chat_id].running:
+        active_hunters.append(('TikTok', tiktok_hunters[chat_id]))
+    if chat_id in youtube_hunters and youtube_hunters[chat_id].running:
+        active_hunters.append(('YouTube', youtube_hunters[chat_id]))
+    if chat_id in discord_hunters and discord_hunters[chat_id].running:
+        active_hunters.append(('Discord', discord_hunters[chat_id]))
+    
+    if not active_hunters:
+        bot.reply_to(message, "❌ No active hunting sessions.")
+        return
+    
+    stats_message = "📊 *ALL ACTIVE HUNTERS*\n━━━━━━━━━━━━━━━━━━\n\n"
+    
+    total_checked = 0
+    total_available = 0
+    total_speed = 0
+    
+    for platform_name, hunter in active_hunters:
+        stats = hunter.get_stats()
+        total_checked += stats['checked']
+        total_available += stats['available']
+        total_speed += stats['speed']
+        
+        stats_message += f"*{platform_name}*\n"
+        stats_message += f"✅ Found: {stats['available']:,}\n"
+        stats_message += f"🔍 Checked: {stats['checked']:,}\n"
+        stats_message += f"⚡ Speed: {stats['speed']:.2f}/s\n"
+        stats_message += f"🎯 Success: {stats['success_rate']:.2f}%\n"
+        
+        if stats['last_available']:
+            stats_message += f"📈 Last: `{stats['last_available']}`\n"
+        
+        stats_message += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    stats_message += f"*TOTALS*\n"
+    stats_message += f"✅ Found: {total_available:,}\n"
+    stats_message += f"🔍 Checked: {total_checked:,}\n"
+    stats_message += f"⚡ Avg Speed: {total_speed/len(active_hunters):.2f}/s\n"
+    stats_message += f"🏆 Active Hunters: {len(active_hunters)}/6"
+    
+    bot.reply_to(message, stats_message, parse_mode='Markdown')
+
+@bot.message_handler(commands=['stopall'])
+def stop_all_hunters(message):
+    """Stop all active hunters"""
+    chat_id = message.chat.id
+    
+    stopped = []
+    
+    # Stop Instagram
+    if chat_id in instagram_hunters and instagram_hunters[chat_id].running:
+        instagram_hunters[chat_id].stop_hunting()
+        stopped.append('Instagram')
+        del instagram_hunters[chat_id]
+    
+    # Stop Telegram
+    if chat_id in telegram_hunters and telegram_hunters[chat_id].running:
+        telegram_hunters[chat_id].stop_hunting()
+        stopped.append('Telegram')
+        del telegram_hunters[chat_id]
+    
+    # Stop Twitter
+    if chat_id in twitter_hunters and twitter_hunters[chat_id].running:
+        twitter_hunters[chat_id].stop_hunting()
+        stopped.append('Twitter/X')
+        del twitter_hunters[chat_id]
+    
+    # Stop TikTok
+    if chat_id in tiktok_hunters and tiktok_hunters[chat_id].running:
+        tiktok_hunters[chat_id].stop_hunting()
+        stopped.append('TikTok')
+        del tiktok_hunters[chat_id]
+    
+    # Stop YouTube
+    if chat_id in youtube_hunters and youtube_hunters[chat_id].running:
+        youtube_hunters[chat_id].stop_hunting()
+        stopped.append('YouTube')
+        del youtube_hunters[chat_id]
+    
+    # Stop Discord
+    if chat_id in discord_hunters and discord_hunters[chat_id].running:
+        discord_hunters[chat_id].stop_hunting()
+        stopped.append('Discord')
+        del discord_hunters[chat_id]
+    
+    if stopped:
+        bot.reply_to(message, f"🛑 *Stopped {len(stopped)} hunters:*\n{', '.join(stopped)}", parse_mode='Markdown')
+    else:
+        bot.reply_to(message, "❌ No active hunters to stop.")
+
 # ========== FLASK ENDPOINTS ==========
 app_start_time = time.time()
 
@@ -1957,7 +2261,6 @@ def hunter_stats():
             stats = hunter.get_stats()
             total_stats['checked'] += stats['checked']
             total_stats['available'] += stats['available']
-            # Note: rate_limited field not in BaseHunter, using errors as proxy
             total_stats['rate_limited'] += stats['errors']
     
     return jsonify({
@@ -2085,14 +2388,19 @@ if __name__ == '__main__':
     print("=" * 70)
     print("🎯 SUPPORTED PLATFORMS:")
     print("• Instagram: /hunt (4L) - INCLUDED!")
-    print("• Telegram: /htele (4L+5L)")
-    print("• Twitter/X: /hx (4L+5L)")
-    print("• TikTok: /htiktok (4L+5L)")
-    print("• YouTube: /hyoutube (3L+4L+5L)")
+    print("• Telegram: /htele (4L+5L) - /statttele /stopttele")
+    print("• Twitter/X: /hx (4L+5L) - /statx /stopx")
+    print("• TikTok: /htiktok (4L+5L) - /stattiktok /stoptiktok")
+    print("• YouTube: /hyoutube (3L+4L+5L) - /statyoutube /stopyoutube")
     print("• Discord: /hdiscord (4L+5L) - WORKING DISCORD API!")
+    print("=" * 70)
+    print("🆕 ADDED COMMANDS:")
+    print("• /allstats - Show all active hunters")
+    print("• /stopall - Stop all hunters at once")
     print("=" * 70)
     print("🔐 Discord Token: Loaded ✓")
     print("📸 Instagram: Included with signup method ✓")
+    print("🎵 TikTok: Fixed checker ✓")
     print("🌐 All Flask endpoints added ✓")
     print("💡 Run ALL 6 hunters simultaneously!")
     print("=" * 70)
