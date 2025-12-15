@@ -1157,6 +1157,7 @@ class YouTubeHunter(BaseHunter):
     
     def __init__(self, chat_id, length_pref='3L+4L'):
         super().__init__(chat_id, 'youtube', length_pref)
+        self.api_key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
     
     def save_session(self):
         conn = sqlite3.connect('universal_hunter.db')
@@ -1242,7 +1243,128 @@ class YouTubeHunter(BaseHunter):
                 return username, length
     
     def check_username(self, username):
-        """Check YouTube username"""
+        """REAL YouTube handle checker using official API"""
+        try:
+            # Method 1: Try official API first
+            api_result = self.check_youtube_api(username)
+            if api_result is not None:
+                return api_result
+            
+            # Method 2: Fallback to page check
+            return self.check_youtube_page(username)
+            
+        except Exception as e:
+            logger.error(f"YouTube check error for {username}: {e}")
+            return False
+    
+    def check_youtube_api(self, username):
+        """Check using YouTube's official handle validation API"""
+        try:
+            url = "https://www.youtube.com/youtubei/v1/channel_edit/validate_channel_handle?prettyPrint=false"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Content-Type': 'application/json',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Origin': 'https://www.youtube.com',
+                'Referer': 'https://www.youtube.com/',
+                'X-Goog-AuthUser': '0',
+                'X-Origin': 'https://www.youtube.com',
+            }
+            
+            payload = {
+                "handle": username,
+                "context": {
+                    "client": {
+                        "clientName": "WEB",
+                        "clientVersion": "2.20241214.00.00",
+                        "hl": "en",
+                        "gl": "US",
+                        "mainAppWebInfo": {
+                            "graftUrl": "/account_handle"
+                        }
+                    },
+                    "user": {
+                        "lockedSafetyMode": False
+                    },
+                    "request": {
+                        "useSsl": True,
+                        "internalExperimentFlags": []
+                    }
+                }
+            }
+            
+            # Add API key to URL
+            api_url = f"{url}&key={self.api_key}"
+            
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=10,
+                verify=False
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Debug logging
+                logger.debug(f"YouTube API response for {username}: {json.dumps(data, indent=2)[:500]}")
+                
+                # Check for success field
+                if "success" in data:
+                    if data["success"]:
+                        logger.info(f"YouTube API: {username} - AVAILABLE ✓")
+                        return True
+                    else:
+                        logger.info(f"YouTube API: {username} - TAKEN ✗")
+                        return False
+                
+                # Check for error messages
+                if "error" in data:
+                    error_code = data["error"].get("code", "")
+                    error_message = data["error"].get("message", "")
+                    
+                    # Handle specific error codes
+                    if error_code == 400:
+                        if "HANDLE_TAKEN" in error_message or "already in use" in error_message.lower():
+                            logger.info(f"YouTube API: {username} - TAKEN (HANDLE_TAKEN)")
+                            return False
+                        elif "invalid" in error_message.lower():
+                            logger.info(f"YouTube API: {username} - INVALID FORMAT")
+                            return False
+                    
+                    logger.info(f"YouTube API: {username} - Error: {error_message}")
+                    return False
+                
+                # Check for specific response fields
+                if "actions" in data:
+                    for action in data["actions"]:
+                        if "openPopupAction" in action:
+                            popup = action["openPopupAction"]["popup"]
+                            if "confirmDialogRenderer" in popup:
+                                dialog = popup["confirmDialogRenderer"]
+                                if "title" in dialog:
+                                    title = dialog["title"]["simpleText"].lower()
+                                    if "unavailable" in title or "taken" in title:
+                                        logger.info(f"YouTube API: {username} - TAKEN (dialog)")
+                                        return False
+                
+                # Default: assume not available if we can't determine
+                logger.info(f"YouTube API: {username} - UNCERTAIN, assuming TAKEN")
+                return False
+                
+            else:
+                logger.warning(f"YouTube API returned status {response.status_code}")
+                return None  # Return None to try fallback method
+                
+        except Exception as e:
+            logger.error(f"YouTube API check error: {e}")
+            return None  # Return None to try fallback method
+    
+    def check_youtube_page(self, username):
+        """Fallback method: Check YouTube page"""
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -1256,23 +1378,41 @@ class YouTubeHunter(BaseHunter):
                 allow_redirects=True
             )
             
+            # Simple check: If page has channel data, it's taken
             content = response.text.lower()
             
-            if response.status_code == 404 or \
-               '404' in content or \
-               'page not found' in content or \
-               'this page is not available' in content or \
-               'could not find' in content or \
-               'doesn\'t exist' in content:
-                return True
+            # Look for clear channel indicators
+            channel_indicators = [
+                'channelid=',
+                'subscribercount',
+                'videocount',
+                'youtube#channel',
+                'externalchannelid',
+                'isowner',
+            ]
             
-            if 'channel' in content or 'subscriber' in content or 'youtube-user' in content:
-                return False
+            for indicator in channel_indicators:
+                if indicator in content:
+                    return False  # Taken
             
+            # Look for error/404 indicators
+            error_indicators = [
+                'error-page',
+                '404',
+                'page-not-found',
+                'couldn\'t find',
+                'doesn\'t exist',
+            ]
+            
+            for indicator in error_indicators:
+                if indicator in content:
+                    return True  # Available
+            
+            # Default: assume taken
             return False
             
         except Exception as e:
-            logger.error(f"YouTube check error: {e}")
+            logger.error(f"YouTube page check error: {e}")
             return False
 
 # ========== DISCORD HUNTER ==========
@@ -1401,10 +1541,9 @@ class DiscordHunter(BaseHunter):
                 if 'errors' in response_data:
                     errors = response_data['errors']
                     if 'username' in errors:
-                        username_errors = errors['username']
-                        error_details = username_errors.get('_errors', [])
+                        username_errors = errors['username'].get('_errors', [])
                         
-                        for error in error_details:
+                        for error in username_errors:
                             code = error.get('code', '')
                             
                             taken_codes = [
@@ -2816,16 +2955,6 @@ def health_compatibility():
         "timestamp": datetime.now().isoformat()
     }), 200
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Telegram webhook endpoint"""
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return ''
-    return 'Bad request', 400
-
 @app.route('/stats')
 def stats_page():
     """Stats page with all platform details"""
@@ -2872,6 +3001,16 @@ def stats_page():
         "uptime": time.time() - app_start_time,
         "timestamp": datetime.now().isoformat()
     })
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Telegram webhook endpoint"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Bad request', 400
 
 # ========== MAIN ==========
 if __name__ == '__main__':
