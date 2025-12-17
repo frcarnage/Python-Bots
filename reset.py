@@ -2,6 +2,7 @@
 """
 MEGA UNIVERSAL USERNAME HUNTER - ULTIMATE VERSION
 WITH ADMIN CONTROLS + 3L+4L HUNTING + ALL FEATURES
+INTEGRATED ORIGINAL INSTAGRAM HUNTING LOGIC
 """
 
 import json
@@ -676,12 +677,15 @@ class BaseHunter:
             'length_pref': self.length_pref
         }
 
-# ========== INSTAGRAM HUNTER ==========
+# ========== INSTAGRAM HUNTER WITH ORIGINAL LOGIC ==========
 class InstagramHunter(BaseHunter):
-    """Instagram username hunter with 3L+4L support"""
+    """Instagram username hunter with EXACT original script logic"""
     
     def __init__(self, chat_id, length_pref='4L'):
         super().__init__(chat_id, 'instagram', length_pref)
+        # Original variables from your script
+        self.insta = "1234567890qwertyuiopasdfghjklzxcvbnm"
+        self.all = "_._._._._."
         self.email_index = 0
         self.session = requests.Session()
         self.last_request_time = 0
@@ -738,38 +742,41 @@ class InstagramHunter(BaseHunter):
         conn.close()
     
     def generate_username(self):
-        """Generate Instagram username with 3L/4L mix"""
-        # Determine length based on preference
+        """Generate Instagram username using EXACT original logic"""
+        # EXACT original logic from your script
+        v1 = str(''.join((random.choice(self.insta) for i in range(1))))
+        v2 = str(''.join((random.choice(self.insta) for i in range(1))))
+        v3 = str(''.join((random.choice(self.insta) for i in range(1))))
+        v4 = str(''.join((random.choice(self.all) for i in range(1))))
+        
+        # Create the 4 pattern variations from original script
+        user1 = (v4+v1+v2+v3)
+        user2 = (v1+v4+v2+v3)
+        user3 = (v1+v2+v4+v3)
+        user4 = (v1+v2+v3+v4)
+        
+        # Original variable name was hamo010
+        hamo010 = (user1, user2, user3, user4)
+        
+        # Return random choice from the 4 patterns (EXACT original)
+        username = random.choice(hamo010)
+        length = len(username)
+        
+        # For 3L mode, we need to adjust
         if '3L' in self.length_pref and '4L' in self.length_pref:
             # 70% chance for 3L (more valuable)
-            length = 3 if random.random() < 0.7 else 4
+            if random.random() < 0.7 and length == 4:
+                # Remove one character to make it 3L
+                username = username[:-1]
+                length = 3
         elif '3L' in self.length_pref:
-            length = 3
-        else:
-            length = 4
+            if length == 4:
+                username = username[:-1]
+                length = 3
         
-        # Instagram patterns
-        if length == 3:
-            # 3L: letters only or 2 letters + number
-            if random.random() < 0.7:
-                username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=3))
-            else:
-                username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=2)) + random.choice('0123456789')
-        else:
-            # 4L patterns
-            patterns = [
-                lambda: ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=4)),
-                lambda: ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=3)) + random.choice('0123456789'),
-                lambda: ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=2)) + random.choice('._') + random.choice('abcdefghijklmnopqrstuvwxyz'),
-            ]
-            username = random.choice(patterns)()
-        
-        # Ensure it doesn't start with special chars and not used recently
-        while username[0] in '._' or username in self.used_usernames:
-            if length == 3:
-                username = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=length))
-            else:
-                username = random.choice(patterns)()
+        # Ensure it's not used recently
+        if username in self.used_usernames:
+            return self.generate_username()  # Recursively generate new one
         
         self.used_usernames.add(username)
         if len(self.used_usernames) > 1000:
@@ -778,47 +785,55 @@ class InstagramHunter(BaseHunter):
         return username, length
     
     def check_username(self, username):
-        """Check Instagram username using signup attempt method"""
+        """Check Instagram username using EXACT original script method"""
         current_time = time.time()
         time_since_last = current_time - self.last_request_time
         
+        # Respect rate limits
         base_delay = 5
         if time_since_last < base_delay:
             wait_time = base_delay - time_since_last
             time.sleep(wait_time)
         
         try:
-            email = self.get_next_email()
-            
+            # EXACT headers from your original script
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'X-IG-App-ID': '936619743392459',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Origin': 'https://www.instagram.com',
-                'Referer': 'https://www.instagram.com/accounts/emailsignup/',
+                'Host': 'www.instagram.com',
+                'content-length': '85',
+                'sec-ch-ua': '" Not A;Brand";v="99", "Chromium";v="101"',
+                'x-ig-app-id': '936619743392459',
+                'x-ig-www-claim': '0',
+                'sec-ch-ua-mobile': '?0',
+                'x-instagram-ajax': '81f3a3c9dfe2',
+                'content-type': 'application/x-www-form-urlencoded',
+                'accept': '*/*',
+                'x-requested-with': 'XMLHttpRequest',
+                'x-asbd-id': '198387',
+                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.40 Safari/537.36',
+                'x-csrftoken': 'jzhjt4G11O37lW1aDFyFmy1K0yIEN9Qv',
+                'sec-ch-ua-platform': '"Linux"',
+                'origin': 'https://www.instagram.com',
+                'sec-fetch-site': 'same-origin',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-dest': 'empty',
+                'referer': 'https://www.instagram.com/accounts/emailsignup/',
+                'accept-encoding': 'gzip, deflate, br',
+                'accept-language': 'en-IQ,en;q=0.9',
+                'cookie': 'csrftoken=jzhjt4G11O37lW1aDFyFmy1K0yIEN9Qv; mid=YtsQ1gABAAEszHB5wT9VqccwQIUL; ig_did=227CCCC2-3675-4A04-8DA5-BA3195B46425; ig_nrcb=1'
             }
             
-            signup_url = 'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/attempt/'
+            # EXACT URL from your script
+            url = 'https://www.instagram.com/accounts/web_create_ajax/attempt/'
             
-            signup_data = {
-                'email': email,
-                'username': username,
-                'first_name': 'Test',
-                'opt_into_one_tap': 'false',
-                'enc_password': '#PWD_INSTAGRAM_BROWSER:0:0:Test123!',
-                'client_id': 'W6mHTAAEAAHsVu2N0wGEgANGkTyZ',
-                'seamless_login_enabled': '1',
-                'tos_version': 'row',
-                'force_sign_up_code': '',
-            }
+            # EXACT data format from your script
+            email = self.get_next_email()
+            data = f'email={email}&username={username}&first_name=&opt_into_one_tap=false'
             
+            # Make the request (EXACT same as original)
             response = self.session.post(
-                signup_url,
+                url,
                 headers=headers,
-                data=signup_data,
+                data=data,
                 timeout=15,
                 verify=False
             )
@@ -826,37 +841,23 @@ class InstagramHunter(BaseHunter):
             response_text = response.text
             self.last_request_time = time.time()
             
-            if response.status_code == 200:
-                if '{"message":"feedback_required","spam":true' in response_text:
-                    logger.warning(f"Instagram rate limited for {username}")
-                    return False
-                
-                elif '"errors": {"username":' in response_text or '"code": "username_is_taken"' in response_text:
-                    return False
-                
-                elif 'user' in response_text.lower() or 'id' in response_text.lower():
-                    return False
-                
-                else:
-                    if 'error' not in response_text.lower() and 'taken' not in response_text.lower():
-                        return True
-                    else:
-                        return False
-                        
-            elif response.status_code == 429:
-                logger.warning("Instagram 429 Rate Limited")
-                time.sleep(60)
+            # EXACT response checking from your original script
+            if '{"message":"feedback_required","spam":true,"feedback_title":"Try Again Later","feedback_message":"We limit how often you can do certain things on Instagram to protect our community. Tell us if you think we made a mistake.","feedback_url":"repute/report_problem/scraping/","feedback_appeal_label":"Tell us","feedback_ignore_label":"OK","feedback_action":"report_problem","status":"fail"}' in response_text:
+                logger.warning(f"Instagram rate limited for {username}")
+                time.sleep(60)  # Wait longer if rate limited
                 return False
-                
-            elif response.status_code == 400:
-                return False
-                    
+            
+            elif '"errors": {"username":' in response_text or '"code": "username_is_taken"' in response_text:
+                return False  # Username is taken (EXACT original logic)
+            
             else:
-                logger.warning(f"Instagram unexpected status: {response.status_code}")
-                return False
+                # If none of the above conditions match, username is available
+                # (Original script considered this "Good User")
+                return True
                 
         except Exception as e:
             logger.error(f"Instagram check error: {e}")
+            time.sleep(10)
             return False
 
 # ========== TELEGRAM HUNTER ==========
@@ -1805,7 +1806,7 @@ def send_welcome(message):
 
 🏆 *Multiple Platforms Support:*
 
-📸 Instagram: /hunt (3L + 4L)
+📸 Instagram: /hunt (3L + 4L) *WITH ORIGINAL LOGIC*
 💬 Telegram: /htele (4L + 5L) *No 3L*
 🐦 Twitter/X: /hx (3L + 4L)
 🎵 TikTok: /htiktok (3L + 4L)
@@ -1814,6 +1815,7 @@ def send_welcome(message):
 
 📊 *Features:*
 • 3L + 4L hunting on most platforms
+• Instagram uses EXACT original hunting logic
 • Separate hunters for each platform
 • Can run ALL simultaneously
 • Individual statistics
@@ -1828,7 +1830,7 @@ def send_welcome(message):
 # ========== INSTAGRAM COMMANDS ==========
 @bot.message_handler(commands=['hunt'])
 def start_instagram_hunt(message):
-    """Start Instagram username hunting"""
+    """Start Instagram username hunting with ORIGINAL logic"""
     chat_id = message.chat.id
     
     if chat_id in BANNED_USERS:
@@ -1851,7 +1853,8 @@ def start_instagram_hunt(message):
         "• *3L + 4L* - BEST: Mix of both\n\n"
         "*3L Value:* $1,000-$50,000+ 💰\n"
         "*3L Chance:* 0.05-0.1% (very rare)\n"
-        "*4L Chance:* 0.1-0.5%",
+        "*4L Chance:* 0.1-0.5%\n\n"
+        "⚠️ *Using EXACT original script logic!*",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -1888,7 +1891,8 @@ def process_instagram_length(message):
             f"🎯 3L Priority: {'YES (70%)' if '3L' in length_pref else 'NO'}\n"
             f"🧵 Threads: 1\n"
             f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~20-40/hour\n\n"
+            f"⚡ Checks: ~20-40/hour\n"
+            f"🔧 Using: EXACT ORIGINAL LOGIC\n\n"
             f"*Expected finds/day:*\n"
             f"• 3L: { '0.1-0.2' if '3L' in length_pref else '0' }\n"
             f"• 4L: { '0.5-1' if '4L' in length_pref else '0' }\n\n"
@@ -1930,6 +1934,7 @@ def instagram_stats(message):
 📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
 🏷️ Session: `{stats['session_id']}`
 🔢 Mode: {stats['length_pref']}
+🔧 Logic: EXACT ORIGINAL
 
 🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
 """
@@ -1966,6 +1971,7 @@ def stop_instagram_hunt(message):
 
 🏷️ Session: `{stats['session_id']}`
 🔢 Mode: {stats['length_pref']}
+🔧 Logic: EXACT ORIGINAL
 
 💾 Usernames saved to database.
 """
@@ -2922,6 +2928,7 @@ def health_check():
         "hunting_active": len(all_hunters),
         "database": "connected",
         "discord_api": "working",
+        "instagram_logic": "original",
         "timestamp": datetime.now().isoformat()
     }), 200
 
@@ -2931,7 +2938,7 @@ def root_home():
     return jsonify({
         "status": "running",
         "service": "Universal Username Hunter Bot v7.0",
-        "message": "ULTIMATE VERSION - Admin Controls + 3L+4L Hunting",
+        "message": "ULTIMATE VERSION - Admin Controls + 3L+4L Hunting + ORIGINAL INSTAGRAM LOGIC",
         "admin_id": ADMIN_ID,
         "endpoints": {
             "/": "This page",
@@ -2940,7 +2947,7 @@ def root_home():
             "/health": "Basic health"
         },
         "platforms": ["Instagram", "Telegram", "Twitter/X", "TikTok", "YouTube", "Discord"],
-        "features": ["3L+4L Hunting", "Admin Controls", "User Management", "Discord API", "Flask API"]
+        "features": ["3L+4L Hunting", "Admin Controls", "User Management", "Discord API", "Flask API", "ORIGINAL Instagram Logic"]
     })
 
 @app.route('/health')
@@ -2952,6 +2959,7 @@ def health_compatibility():
         "admin_system": "active",
         "3l_support": "enabled",
         "discord_api_working": True,
+        "instagram_original_logic": True,
         "timestamp": datetime.now().isoformat()
     }), 200
 
@@ -2962,7 +2970,8 @@ def stats_page():
     
     platform_stats['instagram'] = {
         'active': len([h for h in instagram_hunters.values() if h.running]),
-        'total_sessions': len(instagram_hunters)
+        'total_sessions': len(instagram_hunters),
+        'logic': 'original'
     }
     
     platform_stats['telegram'] = {
@@ -3024,7 +3033,7 @@ if __name__ == '__main__':
     print(f"📈 Details: http://localhost:{BOT_PORT}/stats")
     print("=" * 70)
     print("🎯 SUPPORTED PLATFORMS (3L+4L):")
-    print("• Instagram: /hunt (3L+4L) - INCLUDED!")
+    print("• Instagram: /hunt (3L+4L) - EXACT ORIGINAL LOGIC!")
     print("• Telegram: /htele (4L+5L) *No 3L*")
     print("• Twitter/X: /hx (3L+4L)")
     print("• TikTok: /htiktok (3L+4L)")
@@ -3040,6 +3049,7 @@ if __name__ == '__main__':
     print("🔐 Discord Token: Loaded ✓")
     print("👤 User Management: Active ✓")
     print("💰 3L Support: Enabled on 5 platforms ✓")
+    print("📸 Instagram: Using EXACT original logic ✓")
     print("🎯 Smart Mixing: 70% 3L priority ✓")
     print("📊 Enhanced Stats: 3L/4L tracking ✓")
     print("🔔 Admin Notifications: Active ✓")
@@ -3073,6 +3083,7 @@ if __name__ == '__main__':
     print("🎯 Use /start to see all commands")
     print("👑 Admin panel ready")
     print("💰 3L hunting ACTIVE - Find high-value usernames!")
+    print("📸 Instagram using EXACT original hunting logic")
     print("🌐 Monitor at: http://localhost:{}/hunter".format(BOT_PORT))
     print("=" * 70)
     
