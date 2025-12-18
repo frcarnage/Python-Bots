@@ -1026,6 +1026,131 @@ def init_database():
         import traceback
         traceback.print_exc()
 
+# ==================== AUCTION CHECKER THREAD ====================
+def auction_checker_thread():
+    """Background thread to check auction endings"""
+    while True:
+        try:
+            # Check if tables exist first
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_listings'")
+                if not cursor.fetchone():
+                    print("⚠️ marketplace_listings table doesn't exist yet, waiting...")
+                    conn.close()
+                    time.sleep(30)
+                    continue
+                conn.close()
+            except:
+                time.sleep(30)
+                continue
+            
+            # Now check auction endings
+            ended_auctions = execute_query('''
+                SELECT ml.*, u.username as seller_username
+                FROM marketplace_listings ml
+                JOIN users u ON ml.seller_id = u.user_id
+                WHERE ml.sale_type = 'auction' AND ml.status = 'active' 
+                AND ml.auction_end_time IS NOT NULL 
+                AND ml.auction_end_time < ?
+            ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+            
+            for auction in ended_auctions:
+                if auction["highest_bidder"]:
+                    # Auction sold - create swap
+                    swap_id = generate_swap_id()
+                    execute_query('''
+                        INSERT INTO marketplace_swaps 
+                        (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        swap_id, auction["listing_id"], auction["seller_id"], auction["highest_bidder"],
+                        auction["current_bid"], auction["currency"], "created",
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ), commit=True)
+                    
+                    # Update listing status
+                    execute_query(
+                        "UPDATE marketplace_listings SET status = 'reserved' WHERE listing_id = ?",
+                        (auction["listing_id"],), commit=True
+                    )
+                    
+                    # Notify winner
+                    try:
+                        bot.send_message(
+                            auction["highest_bidder"],
+                            f"🎉 *You won the auction!*\n\n"
+                            f"Username: @{auction['username']}\n"
+                            f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
+                            f"Swap ID: `{swap_id}`\n\n"
+                            f"Middleman will contact you shortly.",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                    
+                    # Notify seller
+                    try:
+                        bot.send_message(
+                            auction["seller_id"],
+                            f"💰 *Auction Ended - Sold!*\n\n"
+                            f"Username: @{auction['username']}\n"
+                            f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
+                            f"Buyer: User {auction['highest_bidder']}\n"
+                            f"Swap ID: `{swap_id}`\n\n"
+                            f"Wait for middleman instructions.",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                    
+                    # Notify admin group
+                    try:
+                        bot.send_message(
+                            ADMIN_GROUP_ID,
+                            f"🏆 *AUCTION ENDED - SOLD!*\n\n"
+                            f"Listing: `{auction['listing_id']}`\n"
+                            f"Username: `{auction['username']}`\n"
+                            f"Seller: {auction['seller_username']}\n"
+                            f"Buyer: {auction['highest_bidder']}\n"
+                            f"Price: {auction['current_bid']} {auction['currency']}\n"
+                            f"Swap ID: `{swap_id}`",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                else:
+                    # No bids - mark as expired
+                    execute_query(
+                        "UPDATE marketplace_listings SET status = 'expired' WHERE listing_id = ?",
+                        (auction["listing_id"],), commit=True
+                    )
+                    
+                    # Notify seller
+                    try:
+                        bot.send_message(
+                            auction["seller_id"],
+                            f"⏰ *Auction Ended - No Bids*\n\n"
+                            f"Username: @{auction['username']}\n"
+                            f"No bids were placed on your auction.\n"
+                            f"You can relist it with /sell",
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+            
+            if ended_auctions:
+                print(f"✅ Processed {len(ended_auctions)} ended auctions")
+            
+            time.sleep(60)  # Check every minute
+            
+        except Exception as e:
+            print(f"❌ Error checking auction endings: {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(60)
+
 # ==================== BASIC HELPER FUNCTIONS ====================
 def is_admin(user_id):
     """Check if user is admin"""
@@ -1383,45 +1508,35 @@ def add_user(user_id, username, first_name, last_name, referral_code="direct"):
     """Add new user to database"""
     existing_user = execute_one("SELECT * FROM users WHERE user_id = ?", (user_id,))
     if existing_user:
-        # Update existing user
-        execute_query(
-            "UPDATE users SET username = ?, first_name = ?, last_name = ?, last_active = ? WHERE user_id = ?",
-            (username, first_name, last_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
-            commit=True
-        )
         return
-    
-    # Check if user is admin
-    is_admin_user = (user_id == ADMIN_USER_ID)
     
     user_referral_code = generate_referral_code(user_id)
     execute_query('''
         INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, 
-                          referral_code, join_method, credits, approved, is_admin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          referral_code, join_method, credits)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (user_id, username, first_name, last_name, 
           datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
           datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-          user_referral_code, 'direct', 100, 1 if is_admin_user else 0, 1 if is_admin_user else 0), commit=True)
+          user_referral_code, 'direct', 100), commit=True)
     
     if referral_code and referral_code != "direct":
         process_referral(user_id, referral_code)
     
-    # Notify admin about new user (only if not admin)
-    if user_id != ADMIN_USER_ID:
-        try:
-            bot.send_message(
-                ADMIN_USER_ID,
-                f"🆕 *New User Joined*\n\n"
-                f"ID: `{user_id}`\n"
-                f"Name: {first_name} {last_name}\n"
-                f"Username: @{username or 'N/A'}\n"
-                f"Via: {'Referral' if referral_code != 'direct' else 'Direct'}\n\n"
-                f"Total Users: {get_total_users()}",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
+    # Notify admin about new user
+    try:
+        bot.send_message(
+            ADMIN_USER_ID,
+            f"🆕 *New User Joined*\n\n"
+            f"ID: `{user_id}`\n"
+            f"Name: {first_name} {last_name}\n"
+            f"Username: @{username or 'N/A'}\n"
+            f"Via: {'Referral' if referral_code != 'direct' else 'Direct'}\n\n"
+            f"Total Users: {get_total_users()}",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
 
 def update_user_active(user_id):
     """Update user's last active time"""
@@ -1430,19 +1545,11 @@ def update_user_active(user_id):
 
 def get_user_status(user_id):
     """Get user approval status"""
-    # Admin is always approved
-    if user_id == ADMIN_USER_ID:
-        return "approved"
-    
-    result = execute_one("SELECT approved, is_banned, is_admin FROM users WHERE user_id = ?", (user_id,))
+    result = execute_one("SELECT approved, is_banned FROM users WHERE user_id = ?", (user_id,))
     
     if result:
         approved = result[0]
         is_banned = result[1]
-        is_admin = result[2]
-        
-        if is_admin:
-            return "approved"
         
         if is_banned:
             return "banned"
@@ -1618,10 +1725,6 @@ def check_all_channels(user_id):
 
 def has_joined_all_channels(user_id):
     """Check if user has joined all required channels"""
-    # Admin doesn't need to join channels
-    if user_id == ADMIN_USER_ID:
-        return True
-    
     results = check_all_channels(user_id)
     return all(results.values())
 
@@ -1674,7 +1777,7 @@ def send_welcome_with_channels(user_id, first_name):
 # ==================== MENU FUNCTIONS ====================
 def show_main_menu(chat_id):
     """Show main menu"""
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         bot.send_message(chat_id, "⏳ *Your account is pending approval.*", parse_mode="Markdown")
         return
     
@@ -1690,7 +1793,7 @@ def show_main_menu(chat_id):
 
 def show_swapper_menu(chat_id):
     """Show swapper menu"""
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         return
     
     buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap", "Back"]
@@ -1699,7 +1802,7 @@ def show_swapper_menu(chat_id):
 
 def show_settings_menu(chat_id):
     """Show settings menu"""
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         return
     
     buttons = ["Bio", "Name", "Webhook", "Check Block", "Close Sessions", "Back"]
@@ -1709,7 +1812,7 @@ def show_settings_menu(chat_id):
 # ==================== NEW: USERNAME CLAIMER FEATURE ====================
 def show_username_claimer_menu(chat_id):
     """Show username claimer menu"""
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         return
     
     # Check if user has claimer session saved
@@ -1780,7 +1883,7 @@ def save_claimer_session(message):
     chat_id = message.chat.id
     session_id = message.text.strip()
     
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         bot.send_message(chat_id, "❌ Your account is not approved yet.", parse_mode="Markdown")
         show_username_claimer_menu(chat_id)
         return
@@ -2617,6 +2720,81 @@ def admin_addcredits(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
+@bot.message_handler(commands=['stats'])
+def admin_stats(message):
+    """Show bot statistics - ADMIN ONLY"""
+    if message.chat.type != 'private':
+        return
+    
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        bot.reply_to(message, "❌ Admin only command")
+        return
+    
+    try:
+        # Get stats
+        total_users = execute_one("SELECT COUNT(*) FROM users")[0]
+        active_users = execute_one("SELECT COUNT(*) FROM users WHERE last_active > ?",
+                                  ((datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),))[0]
+        
+        total_swaps = execute_one("SELECT COUNT(*) FROM swap_history")[0]
+        successful_swaps = execute_one("SELECT COUNT(*) FROM swap_history WHERE status = 'success'")[0]
+        
+        total_referrals = execute_one("SELECT SUM(total_referrals) FROM users")[0] or 0
+        
+        # Calculate success rate
+        success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
+        
+        # Bot uptime
+        uptime_seconds = time.time() - start_time
+        uptime_str = str(timedelta(seconds=int(uptime_seconds)))
+        
+        response = (
+            f"📊 *Bot Statistics*\n\n"
+            f"🤖 *Users:*\n"
+            f"• Total: {total_users}\n"
+            f"• Active (24h): {active_users}\n\n"
+            
+            f"🔄 *Swaps:*\n"
+            f"• Total: {total_swaps}\n"
+            f"• Successful: {successful_swaps}\n"
+            f"• Success Rate: {success_rate:.1f}%\n\n"
+            
+            f"🎁 *Referrals:*\n"
+            f"• Total: {total_referrals}\n"
+            f"• Active Referrers: {execute_one('SELECT COUNT(DISTINCT referrer_id) FROM referral_tracking')[0]}\n\n"
+            
+            f"⚙️ *System:*\n"
+            f"• Uptime: {uptime_str}\n"
+            f"• Requests: {requests_count}\n"
+            f"• Errors: {errors_count}\n"
+            f"• API Status: {'✅ Online' if check_instagram_api() else '❌ Offline'}\n\n"
+            
+            f"💾 *Database:*\n"
+            f"• Size: {get_database_size()} KB\n"
+        )
+        
+        bot.reply_to(message, response, parse_mode="Markdown")
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
+
+def check_instagram_api():
+    """Check if Instagram API is working"""
+    try:
+        response = requests.get("https://www.instagram.com", timeout=5)
+        return response.status_code == 200
+    except:
+        return False
+
+def get_database_size():
+    """Get database file size"""
+    try:
+        return os.path.getsize('users.db') // 1024
+    except:
+        return 0
+
 # ==================== COMMAND HANDLERS ====================
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -2638,10 +2816,7 @@ def start_command(message):
     update_user_active(user_id)
     
     if has_joined_all_channels(user_id):
-        if user_id == ADMIN_USER_ID:
-            bot.send_message(user_id, "👑 *Welcome Admin!* All features unlocked.", parse_mode="Markdown")
-            show_main_menu(user_id)
-        elif referral_code != "direct":
+        if referral_code != "direct":
             bot.send_message(user_id, "✅ *Approved via referral!* You can start swapping immediately!", parse_mode="Markdown")
             show_main_menu(user_id)
         elif is_user_approved(user_id):
@@ -2675,6 +2850,7 @@ def help_command(message):
 *Basic Commands:*
 /start - Start the bot
 /help - Show this help
+/tutorial - Interactive tutorial
 
 *User Features:*
 /dashboard - Your personal dashboard
@@ -2697,7 +2873,7 @@ def help_command(message):
 
 *Marketplace Features (DM ONLY):*
 /marketplace - Browse username listings
-/create_listing - List username for sale (Real money only)
+/sell - List username for sale (Real money only)
 /bid - Place bid on auction
 /mybids - View your active bids
 
@@ -2738,7 +2914,7 @@ def help_command(message):
 
 *Getting Started:*
 1. Join both channels above
-2. Use buttons in main menu
+2. Use /tutorial for step-by-step guide
 3. Add Instagram sessions
 4. Start swapping!
 5. Refer friends for FREE swaps (2 per referral!)
@@ -2985,7 +3161,7 @@ def save_main_session(message):
     chat_id = message.chat.id
     session_id = message.text.strip()
     
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         bot.send_message(chat_id, "❌ Your account is not approved yet.", parse_mode="Markdown")
         show_main_menu(chat_id)
         return
@@ -3011,7 +3187,7 @@ def save_target_session(message):
     chat_id = message.chat.id
     session_id = message.text.strip()
     
-    if not is_user_approved(chat_id) and chat_id != ADMIN_USER_ID:
+    if not is_user_approved(chat_id):
         bot.send_message(chat_id, "❌ Your account is not approved yet.", parse_mode="Markdown")
         show_main_menu(chat_id)
         return
@@ -3621,9 +3797,9 @@ def send_marketplace_to_user(user_id, edit_message_id=None):
     else:
         bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
 
-@bot.message_handler(commands=['create_listing'])
-def create_listing_command(message):
-    """Start creating a marketplace listing - REPLACES /sell command"""
+@bot.message_handler(commands=['sell'])
+def sell_command(message):
+    """Start selling process - FIXED VERSION"""
     if message.chat.type != 'private':
         return
     
@@ -3650,7 +3826,7 @@ def create_listing_command(message):
     
     bot.send_message(
         user_id,
-        "🛒 *Create Marketplace Listing*\n\n"
+        "🛒 *List a Username for Sale*\n\n"
         "Send the Instagram username you want to sell (without @):\n\n"
         "Example: `carnage` or `og.name`\n\n"
         "*Note:* You'll need to provide session ID to verify ownership.",
@@ -4036,7 +4212,7 @@ def check_auction_endings():
                         f"⏰ *Auction Ended - No Bids*\n\n"
                         f"Username: @{auction['username']}\n"
                         f"No bids were placed on your auction.\n"
-                        f"You can relist it with /create_listing",
+                        f"You can relist it with /sell",
                         parse_mode="Markdown"
                     )
                 except:
@@ -5159,8 +5335,8 @@ def callback_handler(call):
         elif data == "create_listing":
             try:
                 bot.answer_callback_query(call.id, "Starting listing creation...")
-                # Start creating listing in a new message
-                create_listing_command(call.message)
+                # Start selling process in a new message
+                sell_command(call.message)
             except Exception as e:
                 print(f"Error creating listing: {e}")
                 bot.answer_callback_query(call.id, "Error starting listing creation")
@@ -5535,6 +5711,11 @@ def callback_handler(call):
                 response,
                 parse_mode="Markdown"
             )
+            bot.answer_callback_query(call.id)
+            
+        elif data == "continue_search":
+            # Continue searching for short names
+            handle_auto_swap_short(call)
             bot.answer_callback_query(call.id)
             
         elif data.startswith("unban_"):
@@ -5991,6 +6172,147 @@ def health():
 def ping1():
     return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
 
+# ==================== WHAT TO POST IN CHANNELS ====================
+def post_initial_announcements():
+    """Post initial announcements to channels"""
+    try:
+        # Updates Channel Announcement
+        updates_message = """
+🎉 *CARNAGE SWAPPER v8.0 OFFICIAL LAUNCH!* 🚀
+
+We are excited to announce *Version 8.0* of *CARNAGE Swapper Bot* - Now with USERNAME CLAIMER FEATURE!
+
+*✨ NEW FEATURE IN v8.0:*
+
+🚀 *USERNAME CLAIMER*
+• Check username availability
+• Claim available usernames instantly
+• Only ONE session needed
+• No target account required
+• Perfect for claiming 1L/2L/3L names
+• Works with numbers-only usernames
+
+🎯 *AUCTION SYSTEM*
+• Bid on Instagram usernames
+• Automatic bid increments
+• Buy Now option
+• Fake bid protection (Permanent ban for fake bids)
+
+🤝 *VOUCH SYSTEM*
+• Automatic vouch requests after swaps
+• Positive/Negative feedback
+• Vouch score calculation
+• Verified transactions only
+
+🛒 *ENHANCED MARKETPLACE*
+• Fixed price and auction listings
+• Verified seller sessions
+• Real currency only (INR/USDT)
+• Secure escrow transactions
+
+🔐 *IMPROVED SECURITY*
+• One middleman per swap system
+• Enhanced session encryption
+• Fake bid detection
+• Permanent ban for rule violations
+
+📊 *USER REPUTATION*
+• Vouch scores displayed
+• Transaction history
+• Trust levels
+
+*🚀 GET STARTED:*
+1. Start the bot: @CarnageSwapperBot
+2. Join our channels (required)
+3. Get approved (instant via referral)
+4. Start swapping, selling, bidding, or claiming!
+
+*⚠️ IMPORTANT RULES:*
+• Fake bids = PERMANENT BAN
+• Always use middleman for transactions
+• Real currency only in marketplace
+• Verify sellers before buying
+
+*🎁 REFERRAL PROGRAM:*
+Refer friends and earn FREE swaps! 2 swaps per referral!
+
+*Welcome to the most advanced username swapping platform!* 🔥
+"""
+        
+        # Marketplace Channel Announcement
+        marketplace_message = """
+🛒 *CARNAGE MARKETPLACE v8.0 - NOW WITH AUCTIONS!* 💰
+
+Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
+
+*🎯 NEW AUCTION FEATURES:*
+• Bid on Instagram usernames
+• Automatic bid increments
+• Buy Now option available
+• 24-hour auction duration
+• Real-time bid notifications
+
+*💰 SALE TYPES AVAILABLE:*
+1. *Fixed Price* - Set your price
+2. *Auction* - Accept bids for 24 hours
+3. *Buy Now + Auction* - Set buy now price + accept bids
+
+*🚀 NEW: USERNAME CLAIMER*
+• Check if usernames are available
+• Claim instantly with one session
+• Perfect for rare names (1L/2L/3L)
+• Numbers-only username support
+
+*⚠️ AUCTION RULES:*
+• Minimum bid increments apply
+• Fake bids = PERMANENT BAN
+• Auction winner must complete purchase
+• Buy Now ends auction immediately
+
+*🤝 VOUCH SYSTEM:*
+• Automatic vouch requests after swaps
+• Build your reputation
+• Vouch scores displayed on listings
+• Trusted sellers get badges
+
+*📋 HOW TO SELL:*
+1. Use `/sell` command
+2. Choose sale type (Fixed/Auction/Buy Now)
+3. Set price and verify ownership
+4. Your listing goes live instantly!
+
+*🛍️ HOW TO BUY/BID:*
+1. Browse with `/marketplace`
+2. Click on listing to view details
+3. Place bid or buy now
+4. Contact middleman to complete
+
+*🚀 HOW TO CLAIM USERNAMES:*
+1. Use 'Username Claimer' in main menu
+2. Setup your claimer session
+3. Check username availability
+4. Claim instantly if available!
+
+*💰 PAYMENT METHODS:*
+• Indian Rupees (INR) - UPI/Bank Transfer
+• USDT Crypto (TRC20/ERC20)
+
+*Start listing, bidding, or claiming now with @CarnageSwapperBot!* 🚀
+
+*Need help?* Contact @CARNAGEV1
+"""
+        
+        # Send to updates channel
+        bot.send_message(UPDATES_CHANNEL, updates_message, parse_mode="Markdown")
+        
+        # Send to marketplace channel
+        bot.send_message(MARKETPLACE_CHANNEL_ID, marketplace_message, parse_mode="Markdown")
+        
+        print("✅ Initial announcements posted to channels")
+        
+    except Exception as e:
+        print(f"❌ Error posting announcements: {e}")
+
 # ==================== MAIN STARTUP ====================
 def run_flask_app():
     """Run Flask app"""
@@ -6043,6 +6365,18 @@ def main():
     print("📊 HTML Dashboard & Admin Panel")
     print("🚫 Fake Bid Protection: Permanent ban for fake bids")
     
+    # Post initial announcements
+    print("📢 Posting initial announcements to channels...")
+    try:
+        post_initial_announcements()
+    except:
+        print("⚠️ Could not post announcements (channels might not exist yet)")
+    
+    # Start Telegram bot
+    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
+    bot_thread.start()
+    print("🤖 Telegram bot started in background")
+    
     print("\n🎯 **OPERATION MODES:**")
     print("• User Functions: DM ONLY")
     print("• Middleman Commands: GROUP ONLY")
@@ -6058,15 +6392,19 @@ def main():
     print(f"• Admin Panel: https://separate-genny-1carnage1-2b4c603c.koyeb.app/admin?auth=carnage123")
     
     print("\n✅ **PRODUCTION READY WITH ALL FEATURES!**")
-    print("\n📋 **FIXES IN THIS VERSION:**")
-    print("1. ✅ Admin approval issue fixed - Admin is always approved")
-    print("2. ✅ Marketplace create listing callback fixed")
-    print("3. ✅ /sell command replaced with /create_listing")
-    print("4. ✅ Admin commands working properly")
-    print("5. ✅ Channel verification bypassed for admin")
-    print("6. ✅ All marketplace features working")
-    print("7. ✅ Username Claimer feature fully functional")
-    print("8. ✅ Middleman system working in groups")
+    print("\n📋 **ADDED FEATURES IN v8.0:**")
+    print("1. ✅ Username Claimer - Check & claim available usernames")
+    print("2. ✅ Auction System - Bid on usernames")
+    print("3. ✅ Vouch System - User reputation")
+    print("4. ✅ Fixed /sell command with inline menus")
+    print("5. ✅ Fixed /marketplace with inline buttons")
+    print("6. ✅ Buy Now option for auctions")
+    print("7. ✅ Fake bid protection (Permanent ban)")
+    print("8. ✅ Automatic vouch requests after swaps")
+    print("9. ✅ One middleman per swap system")
+    print("10. ✅ Vouch scores in marketplace listings")
+    print("11. ✅ Auction ending checker (background thread)")
+    print("12. ✅ Username format validation (1L/2L/3L/numbers-only support)")
     
     try:
         while True:
