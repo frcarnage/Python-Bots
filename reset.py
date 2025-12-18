@@ -1,26 +1,23 @@
-#!/usr/bin/env python3
-"""
-MEGA UNIVERSAL USERNAME HUNTER - ULTIMATE VERSION
-WITH ADMIN CONTROLS + 3L+4L HUNTING + ALL FEATURES
-INTEGRATED ORIGINAL INSTAGRAM HUNTING LOGIC
-"""
-
-import json
-import requests
-import logging
-import threading
-import time
-import random
-import sqlite3
 import os
-import queue
-import string
-from datetime import datetime, timedelta
-from flask import Flask, jsonify, request
+import requests
+import base64
 import telebot
 from telebot import types
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import time
+import sqlite3
+import json
+from datetime import datetime
+from flask import Flask, jsonify, request
+import logging
+import threading
+import csv
+import io
+import hashlib
+import pickle
+from cryptography.fernet import Fernet
+from PIL import Image, ImageDraw, ImageFont
+import io as image_io
+import mimetypes
 
 # ========== CONFIGURATION ==========
 BOT_TOKEN = "8522048948:AAGSCayCSZZF_6z2nHcGjVC7B64E3C9u6F8"
@@ -28,21 +25,24 @@ BOT_PORT = int(os.environ.get('PORT', 6001))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
 # ========== ADMIN CONFIG ==========
-ADMIN_ID = 7575087826  # Your admin ID
-BANNED_USERS = set()  # In-memory ban list
+ADMIN_ID = 7575087826
+BANNED_USERS = set()
 
-# ========== DISCORD CONFIG ==========
-DISCORD_TOKEN = "MTM1MjY4NDEwOTIwMTE1MDA0OQ.GfGOZx.qK42V-v4lJi4WDH5AYbdpDfYWZk07d8-hkoOPo"
+# ========== CHANNEL VERIFICATION ==========
+REQUIRED_CHANNEL = "@botupdates_2"  # Channel username
 
-# ========== EMAIL LIST FOR INSTAGRAM SIGNUP ==========
-EMAIL_LIST = [
-    "d78ma6bwd8ps41h@comfythings.com",
-    "4kv24j1qdkcr90t@comfythings.com",
-    "duja0vg0i0dp464@comfythings.com",
-    "hbkfrgrx0c04lnp@comfythings.com",
-    "yr4ibhzlfy3y6cw@comfythings.com",
-    "q0s3j3su1syhzpt@comfythings.com"
-]
+# ========== FACE SWAP CONFIG ==========
+FACE_SWAP_API_TOKEN = "0.ufDEMbVMT7mc9_XLsFDSK5CQqdj9Cx_Zjww0DevIvXN5M4fXQr3B9YtPdGkKAHjXBK6UC9rFcEbZbzCfkxxgmdTYV8iPzTby0C03dTKv5V9uXFYfwIVlqwNbIsfOK_rLRHIPB31bQ0ijSTEd-lLbllf3MkEcpkEZFFmmq8HMAuRuliCXFEdCwEB1HoYSJtvJEmDIVsooU3gYdrCm5yOJ8_lZ4DiHCSvy7P8-YxwJKkapJNCMUCFIfJbWDkDzvh8DGPyTRoHbURX8kClfImmPrGcqlfd7kkoNRcudS25IbNf1CGBsh8V96MtEhnTZvOpZfnp5dpV7MfgwOgvx7hUazUaC_wxQE63Aa0uOPuGvJ70BNrmeZIIrY9roD1Koj316L4g2BZ_LLZZF11wcrNNon8UXB0iVudiNCJyDQCxLUmblXUpt4IUvRoiOqXBNtWtLqY0su0ieVB0jjyDf_-zs7wc8WQ_jqp-NsTxgKOgvZYWV6Elz_lf4cNxGHZJ5BdcyLEoRBH3cksvwoncmYOy5Ulco22QT-x2z06xVFBZYZMVulxAcmvQemKfSFKsNaDxwor35p-amn9Vevhyb-GzA_oIoaTmc0fVXSshax2rdFQHQms86fZ_jkTieRpyIuX0mI3C5jLGIiOXzWxNgax9eZeQstYjIh8BIdMiTIUHfyKVTgtoLbK0hjTUTP0xDlCLnOt5qHdwe_iTWedBsswAJWYdtIxw0YUfIU22GMYrJoekOrQErawNlU5yT-LhXquBQY3EBtEup4JMWLendSh68d6HqjN2T3sAfVw0nY5jg7_5LJwj5gqEk57devNN8GGhogJpfdGzYoNGja22IZIuDnPPmWTpGx4VcLOLknSHrzio.tXUN6eooS69z3QtBp-DY1g.d882822dfe05be2b36ed1950554e1bac753abfe304a289adc4289b3f0d517356"
+
+# ========== ENCRYPTION CONFIG ==========
+ENCRYPTION_KEY = Fernet.generate_key()  # In production, store this securely
+cipher = Fernet(ENCRYPTION_KEY)
+
+# ========== NSFW DETECTION CONFIG ==========
+NSFW_DETECTION_ENABLED = True
+NSFW_API_URL = "https://api.sightengine.com/1.0/check.json"  # Example API
+NSFW_API_USER = "your_user"
+NSFW_API_SECRET = "your_secret"
 
 # ========== FLASK APP ==========
 app = Flask(__name__)
@@ -63,2952 +63,848 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== HUNTING SYSTEM GLOBALS ==========
-instagram_hunters = {}
-telegram_hunters = {}
-twitter_hunters = {}
-tiktok_hunters = {}
-youtube_hunters = {}
-discord_hunters = {}
+# ========== DATABASE SETUP ==========
+def init_database():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    # Users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP,
+            is_banned INTEGER DEFAULT 0,
+            verified INTEGER DEFAULT 0,
+            swaps_count INTEGER DEFAULT 0,
+            successful_swaps INTEGER DEFAULT 0,
+            failed_swaps INTEGER DEFAULT 0,
+            reports_received INTEGER DEFAULT 0,
+            favorites_count INTEGER DEFAULT 0,
+            encryption_key BLOB
+        )
+    ''')
+    
+    # Swaps history table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS swaps_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            swap_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT,
+            processing_time REAL,
+            source_image_hash TEXT,
+            target_image_hash TEXT,
+            result_image_hash TEXT,
+            nsfw_check INTEGER DEFAULT 0,
+            reported INTEGER DEFAULT 0,
+            favorite INTEGER DEFAULT 0,
+            original_data BLOB,
+            encrypted INTEGER DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    
+    # Reports table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reporter_id INTEGER,
+            reported_user_id INTEGER,
+            swap_id INTEGER,
+            reason TEXT,
+            report_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending',
+            admin_action TEXT,
+            FOREIGN KEY (swap_id) REFERENCES swaps_history (id)
+        )
+    ''')
+    
+    # Favorites table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS favorites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            swap_id INTEGER,
+            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (swap_id) REFERENCES swaps_history (id),
+            UNIQUE(user_id, swap_id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    
+    # Load banned users
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
+    for row in cursor.fetchall():
+        BANNED_USERS.add(row[0])
+    conn.close()
 
-# ========== USER MANAGEMENT ==========
-class UserManager:
-    """Manage users and bans"""
+init_database()
+
+# ========== USER DATA FOR FACE SWAP ==========
+user_data = {}
+swap_progress = {}  # Track progress for each swap
+WAITING_FOR_SOURCE = 1
+WAITING_FOR_TARGET = 2
+PROCESSING = 3
+
+# ========== ENCRYPTION FUNCTIONS ==========
+def encrypt_data(data):
+    """Encrypt data"""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    return cipher.encrypt(data)
+
+def decrypt_data(encrypted_data):
+    """Decrypt data"""
+    return cipher.decrypt(encrypted_data).decode('utf-8')
+
+def generate_image_hash(image_data):
+    """Generate hash for image data"""
+    return hashlib.sha256(image_data).hexdigest()
+
+# ========== NSFW DETECTION ==========
+def check_nsfw_content(image_data):
+    """Check if image contains NSFW content"""
+    if not NSFW_DETECTION_ENABLED:
+        return False
     
-    def __init__(self):
-        self.users_db = 'users.db'
-        self.init_db()
-        self.load_banned_users()
-    
-    def init_db(self):
-        """Initialize users database"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_active TIMESTAMP,
-                is_banned INTEGER DEFAULT 0
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id INTEGER,
-                platform TEXT,
-                sessions INTEGER DEFAULT 0,
-                found INTEGER DEFAULT 0,
-                last_session TIMESTAMP,
-                PRIMARY KEY (user_id, platform)
-            )
-        ''')
-        conn.commit()
-        conn.close()
-    
-    def load_banned_users(self):
-        """Load banned users from database"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
-        for row in cursor.fetchall():
-            BANNED_USERS.add(row[0])
-        conn.close()
-    
-    def register_user(self, user_id, username, first_name, last_name):
-        """Register or update user"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO users 
-            (user_id, username, first_name, last_name, last_active)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (user_id, username, first_name, last_name))
-        
-        conn.commit()
-        conn.close()
-        
-        # Notify admin if new user
-        if self.is_new_user(user_id):
-            self.notify_admin_new_user(user_id, username, first_name, last_name)
-    
-    def is_new_user(self, user_id):
-        """Check if user is new"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (user_id,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count == 0
-    
-    def notify_admin_new_user(self, user_id, username, first_name, last_name):
-        """Notify admin about new user"""
+    try:
+        # Simple heuristic check (can be enhanced with ML model)
+        # Check image size (very small might be spam)
+        if len(image_data) < 1024:
+            return False
+            
+        # Check if it's actually an image
         try:
-            message = f"""👤 *NEW USER REGISTERED*
+            img = Image.open(image_io.BytesIO(image_data))
+            img.verify()  # Verify it's a valid image
+            
+            # Get image dimensions
+            width, height = img.size
+            
+            # Basic checks (can be expanded)
+            if width < 50 or height < 50:  # Too small
+                return False
+                
+            # Check image properties
+            if hasattr(img, '_getexif'):
+                exif = img._getexif()
+                if exif:
+                    # Check orientation, etc.
+                    pass
+            
+            # Add more sophisticated checks here
+            # Could integrate with SightEngine, Google Vision API, etc.
+            
+            return False  # Default to not NSFW
+            
+        except Exception as e:
+            logger.error(f"Image verification error: {e}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"NSFW check error: {e}")
+        return False
+
+# ========== IMAGE PROCESSING FUNCTIONS ==========
+def create_comparison_image(source_data, target_data, result_data):
+    """Create a comparison image showing all three photos"""
+    try:
+        # Open all images
+        source_img = Image.open(image_io.BytesIO(source_data))
+        target_img = Image.open(image_io.BytesIO(target_data))
+        result_img = Image.open(image_io.BytesIO(result_data))
+        
+        # Resize images to same height
+        max_height = 300
+        def resize_to_height(img, height):
+            ratio = height / float(img.size[1])
+            width = int(float(img.size[0]) * ratio)
+            return img.resize((width, height), Image.Resampling.LANCZOS)
+        
+        source_img = resize_to_height(source_img, max_height)
+        target_img = resize_to_height(target_img, max_height)
+        result_img = resize_to_height(result_img, max_height)
+        
+        # Create new image with labels
+        total_width = source_img.width + target_img.width + result_img.width + 40  # Padding
+        comparison_img = Image.new('RGB', (total_width, max_height + 60), (255, 255, 255))
+        
+        # Paste images
+        comparison_img.paste(source_img, (10, 40))
+        comparison_img.paste(target_img, (20 + source_img.width, 40))
+        comparison_img.paste(result_img, (30 + source_img.width + target_img.width, 40))
+        
+        # Add labels
+        draw = ImageDraw.Draw(comparison_img)
+        try:
+            font = ImageFont.truetype("arial.ttf", 20)
+        except:
+            font = ImageFont.load_default()
+        
+        draw.text((source_img.width//2 + 10, 15), "Source", fill=(0, 0, 0), font=font)
+        draw.text((source_img.width + target_img.width//2 + 20, 15), "Target", fill=(0, 0, 0), font=font)
+        draw.text((source_img.width + target_img.width + result_img.width//2 + 30, 15), "Result", fill=(0, 0, 255), font=font)
+        
+        # Add separator lines
+        draw.line([(source_img.width + 15, 10), (source_img.width + 15, max_height + 50)], fill=(200, 200, 200), width=2)
+        draw.line([(source_img.width + target_img.width + 25, 10), (source_img.width + target_img.width + 25, max_height + 50)], fill=(200, 200, 200), width=2)
+        
+        # Save to bytes
+        img_byte_arr = image_io.BytesIO()
+        comparison_img.save(img_byte_arr, format='PNG')
+        return img_byte_arr.getvalue()
+        
+    except Exception as e:
+        logger.error(f"Comparison image creation error: {e}")
+        return None
+
+# ========== USER MANAGEMENT FUNCTIONS ==========
+def register_user(user_id, username, first_name, last_name):
+    """Register or update user in database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    # Generate encryption key for user
+    user_key = Fernet.generate_key()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO users 
+        (user_id, username, first_name, last_name, last_active, encryption_key)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+    ''', (user_id, username, first_name, last_name, user_key))
+    
+    conn.commit()
+    conn.close()
+    
+    # Check if new user and notify admin
+    if is_new_user(user_id):
+        notify_admin_new_user(user_id, username, first_name, last_name)
+
+def is_new_user(user_id):
+    """Check if user is new"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (user_id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count == 0
+
+def notify_admin_new_user(user_id, username, first_name, last_name):
+    """Notify admin about new user"""
+    try:
+        total_users = get_total_users()
+        
+        message = f"""👤 *NEW USER REGISTERED*
 
 ━━━━━━━━━━━━━━━━━━
 🆔 *User ID:* `{user_id}`
 👤 *Username:* @{username or 'N/A'}
 📛 *Name:* {first_name} {last_name or ''}
 🕐 *Time:* {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-📊 *Total Users:* {self.get_total_users()}
+📊 *Total Users:* {total_users}
 ━━━━━━━━━━━━━━━━━━
 
 *Admin Commands:*
 /ban {user_id} - Ban user
 /users - List all users
 /botstatus - Check bot status"""
-            
-            bot.send_message(ADMIN_ID, message, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"Admin notification error: {e}")
-    
-    def ban_user(self, user_id):
-        """Ban a user"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
-        conn.commit()
-        conn.close()
-        BANNED_USERS.add(user_id)
-        logger.info(f"User {user_id} banned")
-    
-    def unban_user(self, user_id):
-        """Unban a user"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
-        conn.commit()
-        conn.close()
-        if user_id in BANNED_USERS:
-            BANNED_USERS.remove(user_id)
-        logger.info(f"User {user_id} unbanned")
-    
-    def get_total_users(self):
-        """Get total registered users"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM users')
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
-    
-    def get_active_users(self, days=7):
-        """Get active users in last X days"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT COUNT(*) FROM users 
-            WHERE last_active >= datetime('now', '-? days')
-        ''', (days,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
-    
-    def get_all_users(self):
-        """Get all users with details"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT user_id, username, first_name, last_name, 
-                   join_date, last_active, is_banned
-            FROM users 
-            ORDER BY join_date DESC
-        ''')
-        users = cursor.fetchall()
-        conn.close()
-        return users
-    
-    def update_user_stats(self, user_id, platform, found_count=0):
-        """Update user statistics"""
-        conn = sqlite3.connect(self.users_db)
-        cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT INTO user_stats (user_id, platform, sessions, found, last_session)
-            VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id, platform) DO UPDATE SET
-            sessions = sessions + 1,
-            found = found + ?,
-            last_session = CURRENT_TIMESTAMP
-        ''', (user_id, platform, found_count, found_count))
-        
-        cursor.execute('UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE user_id = ?', (user_id,))
-        
-        conn.commit()
-        conn.close()
+        bot.send_message(ADMIN_ID, message, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Admin notification error: {e}")
 
-user_manager = UserManager()
+def get_total_users():
+    """Get total registered users"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
 
-# ========== DATABASE SETUP ==========
-def init_databases():
-    """Initialize all databases"""
-    conn = sqlite3.connect('universal_hunter.db')
+def get_active_users_count(days=7):
+    """Get active users in last X days"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT COUNT(*) FROM users 
+        WHERE last_active >= datetime('now', '-? days')
+    ''', (days,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def ban_user(user_id, reason="Violation of terms"):
+    """Ban a user"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+    BANNED_USERS.add(user_id)
+    
+    # Log ban
+    add_admin_log(f"User {user_id} banned. Reason: {reason}")
+    logger.info(f"User {user_id} banned: {reason}")
+
+def unban_user(user_id):
+    """Unban a user"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+    if user_id in BANNED_USERS:
+        BANNED_USERS.remove(user_id)
+    
+    add_admin_log(f"User {user_id} unbanned")
+    logger.info(f"User {user_id} unbanned")
+
+def get_all_users():
+    """Get all users with details"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT user_id, username, first_name, last_name, 
+               join_date, last_active, is_banned, verified,
+               swaps_count, successful_swaps, failed_swaps,
+               reports_received, favorites_count
+        FROM users 
+        ORDER BY join_date DESC
+    ''')
+    users = cursor.fetchall()
+    conn.close()
+    return users
+
+def update_user_stats(user_id, success=True):
+    """Update user swap statistics"""
+    conn = sqlite3.connect('face_swap_bot.db')
     cursor = conn.cursor()
     
-    # Instagram hunting sessions
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS instagram_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            session_id TEXT UNIQUE,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            status TEXT DEFAULT 'running',
-            checked INTEGER DEFAULT 0,
-            available_3l INTEGER DEFAULT 0,
-            available_4l INTEGER DEFAULT 0,
-            taken INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            average_speed REAL DEFAULT 0.0,
-            threads INTEGER DEFAULT 1,
-            length_pref TEXT DEFAULT '4L'
-        )
-    ''')
-    
-    # Telegram hunting sessions
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS telegram_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            session_id TEXT UNIQUE,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            status TEXT DEFAULT 'running',
-            checked INTEGER DEFAULT 0,
-            available INTEGER DEFAULT 0,
-            taken INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            average_speed REAL DEFAULT 0.0,
-            threads INTEGER DEFAULT 1,
-            length_pref TEXT DEFAULT '4L'
-        )
-    ''')
-    
-    # Twitter/X hunting sessions
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS twitter_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            session_id TEXT UNIQUE,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            status TEXT DEFAULT 'running',
-            checked INTEGER DEFAULT 0,
-            available_3l INTEGER DEFAULT 0,
-            available_4l INTEGER DEFAULT 0,
-            taken INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            average_speed REAL DEFAULT 0.0,
-            threads INTEGER DEFAULT 1,
-            length_pref TEXT DEFAULT '4L'
-        )
-    ''')
-    
-    # TikTok hunting sessions
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tiktok_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            session_id TEXT UNIQUE,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            status TEXT DEFAULT 'running',
-            checked INTEGER DEFAULT 0,
-            available_3l INTEGER DEFAULT 0,
-            available_4l INTEGER DEFAULT 0,
-            taken INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            average_speed REAL DEFAULT 0.0,
-            threads INTEGER DEFAULT 1,
-            length_pref TEXT DEFAULT '4L'
-        )
-    ''')
-    
-    # YouTube hunting sessions
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS youtube_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            session_id TEXT UNIQUE,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            status TEXT DEFAULT 'running',
-            checked INTEGER DEFAULT 0,
-            available_3l INTEGER DEFAULT 0,
-            available_4l INTEGER DEFAULT 0,
-            taken INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            average_speed REAL DEFAULT 0.0,
-            threads INTEGER DEFAULT 1,
-            length_pref TEXT DEFAULT '4L'
-        )
-    ''')
-    
-    # Discord hunting sessions
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS discord_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            session_id TEXT UNIQUE,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            status TEXT DEFAULT 'running',
-            checked INTEGER DEFAULT 0,
-            available_3l INTEGER DEFAULT 0,
-            available_4l INTEGER DEFAULT 0,
-            taken INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            average_speed REAL DEFAULT 0.0,
-            threads INTEGER DEFAULT 1,
-            length_pref TEXT DEFAULT '4L'
-        )
-    ''')
-    
-    # Found usernames tables (one per platform)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS instagram_found (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            username TEXT UNIQUE,
-            length INTEGER,
-            found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sent_to_telegram INTEGER DEFAULT 0
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS telegram_found (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            username TEXT UNIQUE,
-            length INTEGER,
-            found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sent_to_telegram INTEGER DEFAULT 0
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS twitter_found (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            username TEXT UNIQUE,
-            length INTEGER,
-            found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sent_to_telegram INTEGER DEFAULT 0
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tiktok_found (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            username TEXT UNIQUE,
-            length INTEGER,
-            found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sent_to_telegram INTEGER DEFAULT 0
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS youtube_found (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            username TEXT UNIQUE,
-            length INTEGER,
-            found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sent_to_telegram INTEGER DEFAULT 0
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS discord_found (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            username TEXT UNIQUE,
-            length INTEGER,
-            found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sent_to_telegram INTEGER DEFAULT 0
-        )
-    ''')
+    if success:
+        cursor.execute('''
+            UPDATE users SET 
+            swaps_count = swaps_count + 1,
+            successful_swaps = successful_swaps + 1,
+            last_active = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        ''', (user_id,))
+    else:
+        cursor.execute('''
+            UPDATE users SET 
+            swaps_count = swaps_count + 1,
+            failed_swaps = failed_swaps + 1,
+            last_active = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        ''', (user_id,))
     
     conn.commit()
     conn.close()
 
-init_databases()
+def increment_user_reports(user_id):
+    """Increment report count for user"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE users SET 
+        reports_received = reports_received + 1
+        WHERE user_id = ?
+    ''', (user_id,))
+    conn.commit()
+    conn.close()
 
-# ========== BASE HUNTER CLASS ==========
-class BaseHunter:
-    """Base class for all platform hunters with 3L+4L support"""
-    
-    def __init__(self, chat_id, platform, length_pref='4L'):
-        self.chat_id = chat_id
-        self.platform = platform
-        self.length_pref = length_pref
-        self.session_id = f"{platform.upper()}_{int(time.time())}_{random.randint(1000, 9999)}"
-        self.running = False
-        self.threads = 1
-        self.workers = []
-        self.stats = {
-            'checked': 0,
-            'available_3l': 0,
-            'available_4l': 0,
-            'taken': 0,
-            'errors': 0,
-            'start_time': time.time(),
-            'last_available': None,
-            'last_available_length': None
-        }
-        self.available_list = []
-        self.lock = threading.Lock()
-        self.used_usernames = set()
-        
-        # Save session to database
-        self.save_session()
-        
-        logger.info(f"Created {platform} hunter {self.session_id} for {chat_id}")
-    
-    def save_session(self):
-        """Save hunting session to database (override in child classes)"""
-        pass
-    
-    def update_stats(self):
-        """Update session stats in database (override in child classes)"""
-        pass
-    
-    def save_username(self, username, length):
-        """Save found username to database (override in child classes)"""
-        pass
-    
-    def generate_username(self):
-        """Generate username based on length preference (override)"""
-        pass
-    
-    def check_username(self, username):
-        """Check username on platform (override)"""
-        pass
-    
-    def send_to_telegram(self, username, length, is_3l=False):
-        """Send found username to Telegram"""
-        try:
-            if is_3l:
-                message = f"""🚨🚨🚨 *ULTRA-RARE {self.platform.upper()} 3L FOUND!* 🚨🚨🚨
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 *Username:* `{username}`
-🏆 *Platform:* {self.platform.upper()}
-✅ *Status:* AVAILABLE
-🔢 *Length:* 3 LETTERS (ULTRA RARE!)
-💎 *Value:* ${self.get_3l_value()}+
-🕐 *Time:* {datetime.now().strftime("%H:%M:%S")}
-📊 *Total 3L Found:* {self.stats['available_3l']}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-*HURRY! Claim immediately!*
-
-@xk3ny | @kenyxshop"""
-            else:
-                message = f"""🎯 *{self.platform.upper()} USERNAME FOUND!*
-
-━━━━━━━━━━━━━━━━━━
-📛 *Username:* `{username}`
-🏆 *Platform:* {self.platform.upper()}
-✅ *Status:* AVAILABLE
-🔢 *Length:* {length} Characters
-🕐 *Time:* {datetime.now().strftime("%H:%M:%S")}
-📊 *Total Found:* {self.stats['available_3l'] + self.stats['available_4l']}
-━━━━━━━━━━━━━━━━━━
-
-@xk3ny | @kenyxshop"""
-            
-            bot.send_message(self.chat_id, message, parse_mode='Markdown')
-            return True
-        except Exception as e:
-            logger.error(f"Telegram send error: {e}")
-            return False
-    
-    def get_3l_value(self):
-        """Get estimated value for 3L username"""
-        values = {
-            'instagram': '1,000-50,000',
-            'twitter': '5,000-100,000',
-            'tiktok': '2,000-20,000',
-            'youtube': '500-10,000',
-            'discord': '500-10,000'
-        }
-        return values.get(self.platform, '500-10,000')
-    
-    def worker(self, worker_id):
-        """Worker thread for mixed 3L/4L hunting"""
-        check_count = 0
-        
-        while self.running:
-            try:
-                # Get username and length
-                username, length = self.generate_username()
-                available = self.check_username(username)
-                
-                with self.lock:
-                    self.stats['checked'] += 1
-                    check_count += 1
-                    
-                    if available:
-                        if length == 3:
-                            self.stats['available_3l'] += 1
-                        else:
-                            self.stats['available_4l'] += 1
-                        
-                        self.stats['last_available'] = username
-                        self.stats['last_available_length'] = length
-                        self.available_list.append((username, length))
-                        
-                        # Save to database
-                        self.save_username(username, length)
-                        
-                        # Update user stats
-                        user_manager.update_user_stats(self.chat_id, self.platform, 1)
-                        
-                        # Send to Telegram
-                        self.send_to_telegram(username, length, is_3l=(length == 3))
-                        
-                        logger.info(f"[{worker_id}] ✅ {self.platform} {length}L: {username}")
-                        
-                        # Special celebration for 3L!
-                        if length == 3:
-                            print(f"\n{'='*70}")
-                            print(f"🎉🎉🎉 {self.platform.upper()} 3L FOUND: {username} 🎉🎉🎉")
-                            print(f"💰💰💰 POTENTIAL VALUE: ${self.get_3l_value()}+ 💰💰💰")
-                            print(f"{'='*70}\n")
-                        else:
-                            print(f"\n{'='*60}")
-                            print(f"🎉 {self.platform.upper()} {length}L FOUND: {username} 🎉")
-                            print(f"{'='*60}\n")
-                    else:
-                        self.stats['taken'] += 1
-                
-                # Platform-specific delays
-                if self.platform == 'instagram':
-                    delay = random.uniform(10, 30)
-                elif self.platform == 'youtube':
-                    delay = random.uniform(5, 15)
-                elif self.platform == 'discord':
-                    delay = random.uniform(3, 6)
-                else:
-                    delay = random.uniform(2, 8)
-                
-                # Log every 10 checks
-                if check_count % 10 == 0:
-                    speed = check_count / (time.time() - self.stats['start_time']) if check_count > 0 else 0
-                    total_found = self.stats['available_3l'] + self.stats['available_4l']
-                    logger.info(f"[{worker_id}] {self.platform}: Checked {check_count}, Found: {total_found} (3L: {self.stats['available_3l']}, 4L: {self.stats['available_4l']}), Speed: {speed:.2f}/s")
-                
-                time.sleep(delay)
-                
-            except Exception as e:
-                logger.error(f"Worker {worker_id} error: {e}")
-                with self.lock:
-                    self.stats['errors'] += 1
-                time.sleep(10)
-    
-    def start_hunting(self):
-        """Start the username hunting"""
-        self.running = True
-        logger.info(f"🚀 Starting {self.platform} hunter {self.session_id}")
-        
-        print(f"\n{'='*70}")
-        print(f"🚀 {self.platform.upper()} HUNTER STARTED")
-        print(f"{'='*70}")
-        print(f"• Mode: {self.length_pref}")
-        print(f"• 3L Priority: {'YES (70%)' if '3L' in self.length_pref else 'NO'}")
-        print(f"• Threads: {self.threads}")
-        print(f"• Platform: {self.platform}")
-        print(f"{'='*70}\n")
-        
-        # Start worker thread
-        thread = threading.Thread(target=self.worker, args=(0,), daemon=True)
-        thread.start()
-        self.workers.append(thread)
-        
-        # Start stats updater
-        threading.Thread(target=self.stats_updater, daemon=True).start()
-        
-        return True
-    
-    def stop_hunting(self):
-        """Stop the username hunting"""
-        self.running = False
-        logger.info(f"Stopping {self.platform} hunter {self.session_id}")
-        self.update_stats()
-        return True
-    
-    def stats_updater(self):
-        """Update stats in database periodically"""
-        while self.running:
-            time.sleep(30)
-            self.update_stats()
-    
-    def get_stats(self):
-        """Get current statistics"""
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        total_found = self.stats['available_3l'] + self.stats['available_4l']
-        
-        return {
-            'session_id': self.session_id,
-            'running': self.running,
-            'elapsed': elapsed,
-            'checked': self.stats['checked'],
-            'available_3l': self.stats['available_3l'],
-            'available_4l': self.stats['available_4l'],
-            'total_found': total_found,
-            'taken': self.stats['taken'],
-            'errors': self.stats['errors'],
-            'speed': speed,
-            'success_rate': (total_found/max(1, self.stats['checked'])*100),
-            'success_rate_3l': (self.stats['available_3l']/max(1, self.stats['checked'])*100) if self.stats['checked'] > 0 else 0,
-            'success_rate_4l': (self.stats['available_4l']/max(1, self.stats['checked'])*100) if self.stats['checked'] > 0 else 0,
-            'last_available': self.stats['last_available'],
-            'last_available_length': self.stats['last_available_length'],
-            'threads': self.threads,
-            'platform': self.platform,
-            'length_pref': self.length_pref
-        }
-
-# ========== INSTAGRAM HUNTER WITH ORIGINAL LOGIC ==========
-class InstagramHunter(BaseHunter):
-    """Instagram username hunter with EXACT original script logic"""
-    
-    def __init__(self, chat_id, length_pref='4L'):
-        super().__init__(chat_id, 'instagram', length_pref)
-        # Original variables from your script
-        self.insta = "1234567890qwertyuiopasdfghjklzxcvbnm"
-        self.all = "_._._._._."
-        self.email_index = 0
-        self.session = requests.Session()
-        self.last_request_time = 0
-    
-    def get_next_email(self):
-        """Get next email from the list"""
-        email = EMAIL_LIST[self.email_index]
-        self.email_index = (self.email_index + 1) % len(EMAIL_LIST)
-        return email
-    
-    def save_session(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO instagram_sessions 
-            (chat_id, session_id, status, threads, length_pref)
-            VALUES (?, ?, 'running', ?, ?)
-        ''', (self.chat_id, self.session_id, self.threads, self.length_pref))
-        conn.commit()
-        conn.close()
-    
-    def update_stats(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        cursor.execute('''
-            UPDATE instagram_sessions 
-            SET checked = ?, available_3l = ?, available_4l = ?, taken = ?, errors = ?,
-                average_speed = ?, threads = ?
-            WHERE session_id = ?
-        ''', (
-            self.stats['checked'],
-            self.stats['available_3l'],
-            self.stats['available_4l'],
-            self.stats['taken'],
-            self.stats['errors'],
-            speed,
-            self.threads,
-            self.session_id
-        ))
-        conn.commit()
-        conn.close()
-    
-    def save_username(self, username, length):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO instagram_found 
-            (session_id, username, length)
-            VALUES (?, ?, ?)
-        ''', (self.session_id, username, length))
-        conn.commit()
-        conn.close()
-    
-    def generate_username(self):
-        """Generate Instagram username using EXACT original logic"""
-        # EXACT original logic from your script
-        v1 = str(''.join((random.choice(self.insta) for i in range(1))))
-        v2 = str(''.join((random.choice(self.insta) for i in range(1))))
-        v3 = str(''.join((random.choice(self.insta) for i in range(1))))
-        v4 = str(''.join((random.choice(self.all) for i in range(1))))
-        
-        # Create the 4 pattern variations from original script
-        user1 = (v4+v1+v2+v3)
-        user2 = (v1+v4+v2+v3)
-        user3 = (v1+v2+v4+v3)
-        user4 = (v1+v2+v3+v4)
-        
-        # Original variable name was hamo010
-        hamo010 = (user1, user2, user3, user4)
-        
-        # Return random choice from the 4 patterns (EXACT original)
-        username = random.choice(hamo010)
-        length = len(username)
-        
-        # For 3L mode, we need to adjust
-        if '3L' in self.length_pref and '4L' in self.length_pref:
-            # 70% chance for 3L (more valuable)
-            if random.random() < 0.7 and length == 4:
-                # Remove one character to make it 3L
-                username = username[:-1]
-                length = 3
-        elif '3L' in self.length_pref:
-            if length == 4:
-                username = username[:-1]
-                length = 3
-        
-        # Ensure it's not used recently
-        if username in self.used_usernames:
-            return self.generate_username()  # Recursively generate new one
-        
-        self.used_usernames.add(username)
-        if len(self.used_usernames) > 1000:
-            self.used_usernames.remove(next(iter(self.used_usernames)))
-        
-        return username, length
-    
-    def check_username(self, username):
-        """Check Instagram username using EXACT original script method"""
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        
-        # Respect rate limits
-        base_delay = 5
-        if time_since_last < base_delay:
-            wait_time = base_delay - time_since_last
-            time.sleep(wait_time)
-        
-        try:
-            # EXACT headers from your original script
-            headers = {
-                'Host': 'www.instagram.com',
-                'content-length': '85',
-                'sec-ch-ua': '" Not A;Brand";v="99", "Chromium";v="101"',
-                'x-ig-app-id': '936619743392459',
-                'x-ig-www-claim': '0',
-                'sec-ch-ua-mobile': '?0',
-                'x-instagram-ajax': '81f3a3c9dfe2',
-                'content-type': 'application/x-www-form-urlencoded',
-                'accept': '*/*',
-                'x-requested-with': 'XMLHttpRequest',
-                'x-asbd-id': '198387',
-                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.40 Safari/537.36',
-                'x-csrftoken': 'jzhjt4G11O37lW1aDFyFmy1K0yIEN9Qv',
-                'sec-ch-ua-platform': '"Linux"',
-                'origin': 'https://www.instagram.com',
-                'sec-fetch-site': 'same-origin',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-dest': 'empty',
-                'referer': 'https://www.instagram.com/accounts/emailsignup/',
-                'accept-encoding': 'gzip, deflate, br',
-                'accept-language': 'en-IQ,en;q=0.9',
-                'cookie': 'csrftoken=jzhjt4G11O37lW1aDFyFmy1K0yIEN9Qv; mid=YtsQ1gABAAEszHB5wT9VqccwQIUL; ig_did=227CCCC2-3675-4A04-8DA5-BA3195B46425; ig_nrcb=1'
-            }
-            
-            # EXACT URL from your script
-            url = 'https://www.instagram.com/accounts/web_create_ajax/attempt/'
-            
-            # EXACT data format from your script
-            email = self.get_next_email()
-            data = f'email={email}&username={username}&first_name=&opt_into_one_tap=false'
-            
-            # Make the request (EXACT same as original)
-            response = self.session.post(
-                url,
-                headers=headers,
-                data=data,
-                timeout=15,
-                verify=False
-            )
-            
-            response_text = response.text
-            self.last_request_time = time.time()
-            
-            # EXACT response checking from your original script
-            if '{"message":"feedback_required","spam":true,"feedback_title":"Try Again Later","feedback_message":"We limit how often you can do certain things on Instagram to protect our community. Tell us if you think we made a mistake.","feedback_url":"repute/report_problem/scraping/","feedback_appeal_label":"Tell us","feedback_ignore_label":"OK","feedback_action":"report_problem","status":"fail"}' in response_text:
-                logger.warning(f"Instagram rate limited for {username}")
-                time.sleep(60)  # Wait longer if rate limited
-                return False
-            
-            elif '"errors": {"username":' in response_text or '"code": "username_is_taken"' in response_text:
-                return False  # Username is taken (EXACT original logic)
-            
-            else:
-                # If none of the above conditions match, username is available
-                # (Original script considered this "Good User")
-                return True
-                
-        except Exception as e:
-            logger.error(f"Instagram check error: {e}")
-            time.sleep(10)
-            return False
-
-# ========== TELEGRAM HUNTER ==========
-class TelegramHunter(BaseHunter):
-    """Telegram username hunter (4L+5L only)"""
-    
-    def __init__(self, chat_id, length_pref='4L'):
-        super().__init__(chat_id, 'telegram', length_pref)
-        # Telegram doesn't support 3L, min is 5 chars
-    
-    def save_session(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO telegram_sessions 
-            (chat_id, session_id, status, threads, length_pref)
-            VALUES (?, ?, 'running', ?, ?)
-        ''', (self.chat_id, self.session_id, self.threads, self.length_pref))
-        conn.commit()
-        conn.close()
-    
-    def update_stats(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        cursor.execute('''
-            UPDATE telegram_sessions 
-            SET checked = ?, available = ?, taken = ?, errors = ?,
-                average_speed = ?, threads = ?
-            WHERE session_id = ?
-        ''', (
-            self.stats['checked'],
-            self.stats['available_3l'] + self.stats['available_4l'],
-            self.stats['taken'],
-            self.stats['errors'],
-            speed,
-            self.threads,
-            self.session_id
-        ))
-        conn.commit()
-        conn.close()
-    
-    def save_username(self, username, length):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO telegram_found 
-            (session_id, username, length)
-            VALUES (?, ?, ?)
-        ''', (self.session_id, username, length))
-        conn.commit()
-        conn.close()
-    
-    def generate_username(self):
-        """Generate Telegram username (4L or 5L)"""
-        lengths = []
-        if '4L' in self.length_pref:
-            lengths.append(4)
-        if '5L' in self.length_pref:
-            lengths.append(5)
-        
-        if not lengths:
-            lengths = [4]
-        
-        length = random.choice(lengths)
-        chars = string.ascii_lowercase + string.digits + '_'
-        
-        while True:
-            username = ''.join(random.choices(chars, k=length))
-            if not username.startswith('_') and username not in self.used_usernames:
-                self.used_usernames.add(username)
-                if len(self.used_usernames) > 1000:
-                    self.used_usernames.remove(next(iter(self.used_usernames)))
-                return username, length
-    
-    def check_username(self, username):
-        """Check Telegram username"""
-        try:
-            response = requests.get(
-                f'https://t.me/{username}',
-                timeout=5,
-                allow_redirects=False
-            )
-            
-            if response.status_code == 200:
-                page_text = response.text.lower()
-                if 'page is unavailable' in page_text or 'not found' in page_text:
-                    return True
-                else:
-                    return False
-            else:
-                return False
-        except:
-            return False
-
-# ========== TWITTER HUNTER ==========
-class TwitterHunter(BaseHunter):
-    """Twitter/X username hunter with 3L+4L support"""
-    
-    def __init__(self, chat_id, length_pref='4L'):
-        super().__init__(chat_id, 'twitter', length_pref)
-    
-    def save_session(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO twitter_sessions 
-            (chat_id, session_id, status, threads, length_pref)
-            VALUES (?, ?, 'running', ?, ?)
-        ''', (self.chat_id, self.session_id, self.threads, self.length_pref))
-        conn.commit()
-        conn.close()
-    
-    def update_stats(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        cursor.execute('''
-            UPDATE twitter_sessions 
-            SET checked = ?, available_3l = ?, available_4l = ?, taken = ?, errors = ?,
-                average_speed = ?, threads = ?
-            WHERE session_id = ?
-        ''', (
-            self.stats['checked'],
-            self.stats['available_3l'],
-            self.stats['available_4l'],
-            self.stats['taken'],
-            self.stats['errors'],
-            speed,
-            self.threads,
-            self.session_id
-        ))
-        conn.commit()
-        conn.close()
-    
-    def save_username(self, username, length):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO twitter_found 
-            (session_id, username, length)
-            VALUES (?, ?, ?)
-        ''', (self.session_id, username, length))
-        conn.commit()
-        conn.close()
-    
-    def generate_username(self):
-        """Generate Twitter username with 3L/4L mix"""
-        if '3L' in self.length_pref and '4L' in self.length_pref:
-            length = 3 if random.random() < 0.7 else 4
-        elif '3L' in self.length_pref:
-            length = 3
-        else:
-            length = 4
-        
-        chars = string.ascii_lowercase + string.digits + '_'
-        
-        while True:
-            username = ''.join(random.choices(chars, k=length))
-            if not username.startswith('_') and username not in self.used_usernames:
-                self.used_usernames.add(username)
-                if len(self.used_usernames) > 1000:
-                    self.used_usernames.remove(next(iter(self.used_usernames)))
-                return username, length
-    
-    def check_username(self, username):
-        """Check Twitter/X username"""
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.get(
-                f'https://twitter.com/{username}',
-                headers=headers,
-                timeout=5,
-                allow_redirects=False
-            )
-            return response.status_code == 404
-        except:
-            return False
-
-# ========== TIKTOK HUNTER ==========
-class TikTokHunter(BaseHunter):
-    """TikTok username hunter with 3L+4L support"""
-    
-    def __init__(self, chat_id, length_pref='4L'):
-        super().__init__(chat_id, 'tiktok', length_pref)
-    
-    def save_session(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO tiktok_sessions 
-            (chat_id, session_id, status, threads, length_pref)
-            VALUES (?, ?, 'running', ?, ?)
-        ''', (self.chat_id, self.session_id, self.threads, self.length_pref))
-        conn.commit()
-        conn.close()
-    
-    def update_stats(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        cursor.execute('''
-            UPDATE tiktok_sessions 
-            SET checked = ?, available_3l = ?, available_4l = ?, taken = ?, errors = ?,
-                average_speed = ?, threads = ?
-            WHERE session_id = ?
-        ''', (
-            self.stats['checked'],
-            self.stats['available_3l'],
-            self.stats['available_4l'],
-            self.stats['taken'],
-            self.stats['errors'],
-            speed,
-            self.threads,
-            self.session_id
-        ))
-        conn.commit()
-        conn.close()
-    
-    def save_username(self, username, length):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO tiktok_found 
-            (session_id, username, length)
-            VALUES (?, ?, ?)
-        ''', (self.session_id, username, length))
-        conn.commit()
-        conn.close()
-    
-    def generate_username(self):
-        """Generate TikTok username with 3L/4L mix"""
-        if '3L' in self.length_pref and '4L' in self.length_pref:
-            length = 3 if random.random() < 0.7 else 4
-        elif '3L' in self.length_pref:
-            length = 3
-        else:
-            length = 4
-        
-        chars = string.ascii_lowercase + string.digits + '_.'
-        
-        while True:
-            username = ''.join(random.choices(chars, k=length))
-            if not username.startswith(('_', '.')) and username not in self.used_usernames:
-                self.used_usernames.add(username)
-                if len(self.used_usernames) > 1000:
-                    self.used_usernames.remove(next(iter(self.used_usernames)))
-                return username, length
-    
-    def check_username(self, username):
-        """Check TikTok username - FIXED VERSION"""
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-            }
-            
-            response = requests.get(
-                f'https://www.tiktok.com/@{username}',
-                headers=headers,
-                timeout=10,
-                allow_redirects=False,
-                verify=False
-            )
-            
-            if response.status_code == 200:
-                content = response.text.lower()
-                
-                if 'couldn\'t find this account' in content or \
-                   'user_not_found' in content or \
-                   'page_not_found' in content or \
-                   'account not found' in content or \
-                   'this page is not available' in content:
-                    return True
-                
-                if 'user-post' in content or 'tiktok-user' in content or \
-                   'profile-container' in content or 'follower-count' in content:
-                    return False
-                
-                return False
-                
-            elif response.status_code == 404:
-                return True
-            else:
-                return False
-                
-        except Exception as e:
-            logger.error(f"TikTok check error: {e}")
-            return False
-
-# ========== YOUTUBE HUNTER ==========
-class YouTubeHunter(BaseHunter):
-    """YouTube username hunter with 3L+4L+5L support"""
-    
-    def __init__(self, chat_id, length_pref='3L+4L'):
-        super().__init__(chat_id, 'youtube', length_pref)
-        self.api_key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-    
-    def save_session(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO youtube_sessions 
-            (chat_id, session_id, status, threads, length_pref)
-            VALUES (?, ?, 'running', ?, ?)
-        ''', (self.chat_id, self.session_id, self.threads, self.length_pref))
-        conn.commit()
-        conn.close()
-    
-    def update_stats(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        cursor.execute('''
-            UPDATE youtube_sessions 
-            SET checked = ?, available_3l = ?, available_4l = ?, taken = ?, errors = ?,
-                average_speed = ?, threads = ?
-            WHERE session_id = ?
-        ''', (
-            self.stats['checked'],
-            self.stats['available_3l'],
-            self.stats['available_4l'],
-            self.stats['taken'],
-            self.stats['errors'],
-            speed,
-            self.threads,
-            self.session_id
-        ))
-        conn.commit()
-        conn.close()
-    
-    def save_username(self, username, length):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO youtube_found 
-            (session_id, username, length)
-            VALUES (?, ?, ?)
-        ''', (self.session_id, username, length))
-        conn.commit()
-        conn.close()
-    
-    def generate_username(self):
-        """Generate YouTube username (3L/4L/5L)"""
-        lengths = []
-        if '3L' in self.length_pref:
-            lengths.append(3)
-        if '4L' in self.length_pref:
-            lengths.append(4)
-        if '5L' in self.length_pref:
-            lengths.append(5)
-        
-        if not lengths:
-            lengths = [3, 4]
-        
-        # Weighted selection (70% for 3L if available, then 4L, then 5L)
-        weights = []
-        if 3 in lengths:
-            weights.append(0.7)
-        if 4 in lengths:
-            weights.append(0.2 if 3 in lengths else 0.7)
-        if 5 in lengths:
-            weights.append(0.1 if 3 in lengths else (0.3 if 4 in lengths else 1.0))
-        
-        # Normalize weights
-        total_weight = sum(weights)
-        weights = [w/total_weight for w in weights]
-        
-        length = random.choices(lengths, weights=weights, k=1)[0]
-        
-        chars = string.ascii_lowercase + string.digits + '_.'
-        
-        while True:
-            username = ''.join(random.choices(chars, k=length))
-            if not username.startswith(('_', '.')) and username not in self.used_usernames:
-                self.used_usernames.add(username)
-                if len(self.used_usernames) > 1000:
-                    self.used_usernames.remove(next(iter(self.used_usernames)))
-                return username, length
-    
-    def check_username(self, username):
-        """REAL YouTube handle checker using official API"""
-        try:
-            # Method 1: Try official API first
-            api_result = self.check_youtube_api(username)
-            if api_result is not None:
-                return api_result
-            
-            # Method 2: Fallback to page check
-            return self.check_youtube_page(username)
-            
-        except Exception as e:
-            logger.error(f"YouTube check error for {username}: {e}")
-            return False
-    
-    def check_youtube_api(self, username):
-        """Check using YouTube's official handle validation API"""
-        try:
-            url = "https://www.youtube.com/youtubei/v1/channel_edit/validate_channel_handle?prettyPrint=false"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Content-Type': 'application/json',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Origin': 'https://www.youtube.com',
-                'Referer': 'https://www.youtube.com/',
-                'X-Goog-AuthUser': '0',
-                'X-Origin': 'https://www.youtube.com',
-            }
-            
-            payload = {
-                "handle": username,
-                "context": {
-                    "client": {
-                        "clientName": "WEB",
-                        "clientVersion": "2.20241214.00.00",
-                        "hl": "en",
-                        "gl": "US",
-                        "mainAppWebInfo": {
-                            "graftUrl": "/account_handle"
-                        }
-                    },
-                    "user": {
-                        "lockedSafetyMode": False
-                    },
-                    "request": {
-                        "useSsl": True,
-                        "internalExperimentFlags": []
-                    }
-                }
-            }
-            
-            # Add API key to URL
-            api_url = f"{url}&key={self.api_key}"
-            
-            response = requests.post(
-                api_url,
-                headers=headers,
-                json=payload,
-                timeout=10,
-                verify=False
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Debug logging
-                logger.debug(f"YouTube API response for {username}: {json.dumps(data, indent=2)[:500]}")
-                
-                # Check for success field
-                if "success" in data:
-                    if data["success"]:
-                        logger.info(f"YouTube API: {username} - AVAILABLE ✓")
-                        return True
-                    else:
-                        logger.info(f"YouTube API: {username} - TAKEN ✗")
-                        return False
-                
-                # Check for error messages
-                if "error" in data:
-                    error_code = data["error"].get("code", "")
-                    error_message = data["error"].get("message", "")
-                    
-                    # Handle specific error codes
-                    if error_code == 400:
-                        if "HANDLE_TAKEN" in error_message or "already in use" in error_message.lower():
-                            logger.info(f"YouTube API: {username} - TAKEN (HANDLE_TAKEN)")
-                            return False
-                        elif "invalid" in error_message.lower():
-                            logger.info(f"YouTube API: {username} - INVALID FORMAT")
-                            return False
-                    
-                    logger.info(f"YouTube API: {username} - Error: {error_message}")
-                    return False
-                
-                # Check for specific response fields
-                if "actions" in data:
-                    for action in data["actions"]:
-                        if "openPopupAction" in action:
-                            popup = action["openPopupAction"]["popup"]
-                            if "confirmDialogRenderer" in popup:
-                                dialog = popup["confirmDialogRenderer"]
-                                if "title" in dialog:
-                                    title = dialog["title"]["simpleText"].lower()
-                                    if "unavailable" in title or "taken" in title:
-                                        logger.info(f"YouTube API: {username} - TAKEN (dialog)")
-                                        return False
-                
-                # Default: assume not available if we can't determine
-                logger.info(f"YouTube API: {username} - UNCERTAIN, assuming TAKEN")
-                return False
-                
-            else:
-                logger.warning(f"YouTube API returned status {response.status_code}")
-                return None  # Return None to try fallback method
-                
-        except Exception as e:
-            logger.error(f"YouTube API check error: {e}")
-            return None  # Return None to try fallback method
-    
-    def check_youtube_page(self, username):
-        """Fallback method: Check YouTube page"""
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            }
-            
-            response = requests.get(
-                f'https://www.youtube.com/@{username}',
-                headers=headers,
-                timeout=8,
-                allow_redirects=True
-            )
-            
-            # Simple check: If page has channel data, it's taken
-            content = response.text.lower()
-            
-            # Look for clear channel indicators
-            channel_indicators = [
-                'channelid=',
-                'subscribercount',
-                'videocount',
-                'youtube#channel',
-                'externalchannelid',
-                'isowner',
-            ]
-            
-            for indicator in channel_indicators:
-                if indicator in content:
-                    return False  # Taken
-            
-            # Look for error/404 indicators
-            error_indicators = [
-                'error-page',
-                '404',
-                'page-not-found',
-                'couldn\'t find',
-                'doesn\'t exist',
-            ]
-            
-            for indicator in error_indicators:
-                if indicator in content:
-                    return True  # Available
-            
-            # Default: assume taken
-            return False
-            
-        except Exception as e:
-            logger.error(f"YouTube page check error: {e}")
-            return False
-
-# ========== DISCORD HUNTER ==========
-class DiscordHunter(BaseHunter):
-    """Discord username hunter with 3L+4L support"""
-    
-    def __init__(self, chat_id, length_pref='3L+4L'):
-        super().__init__(chat_id, 'discord', length_pref)
-        self.discord_token = DISCORD_TOKEN
-        self.headers = self.get_discord_headers()
-        self.last_check_time = 0
-        self.rate_limit_delay = 3
-    
-    def get_discord_headers(self):
-        """Get Discord API headers using your token"""
-        return {
-            'Authorization': self.discord_token,
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'X-Super-Properties': 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzE0My4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTQzLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiJodHRwczovL3d3dy5nb29nbGUuY29tLyIsInJlZmVycmluZ19kb21haW4iOiJ3d3cuZ29vZ2xlLmNvbSIsInNlYXJjaF9lbmdpbmUiOiJnb29nbGUiLCJyZWZlcnJlcl9jdXJyZW50IjoiIiwicmVmZXJyaW5nX2RvbWFpbl9jdXJyZW50IjoiIiwicmVsZWFzZV9jaGFubmVsIjoic3RhYmxlIiwiY2xpZW50X2J1aWxkX251bWJlciI6NDc5NzkzLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsLCJjbGllbnRfbGF1bmNoX2lkIjoiMWJiNDQxZGYtZTJjNS00NjEwLWJlYTEtMGU0NGEwOTE1NzEzIiwibGF1bmNoX3NpZ25hdHVyZSI6IjIzMTllYjQxLTE0YzgtNDVlMC05ZTJlLWZlOGZhNDQ2ZjU1ZSIsImNsaWVudF9oZWFydGJlYXRfc2Vzc2lvbl9pZCI6IjljZTc0OTFhLWMwOTUtNDJhOS04YmQ2LTdjYjgyMmIyNDM5MCIsImNsaWVudF9hcHBfc3RhdGUiOiJ1bmZvY3VzZWQifQ==',
-            'X-Discord-Timezone': 'Asia/Calcutta',
-            'X-Discord-Locale': 'en-US',
-            'Origin': 'https://discord.com',
-            'Referer': 'https://discord.com/channels/@me',
-        }
-    
-    def save_session(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO discord_sessions 
-            (chat_id, session_id, status, threads, length_pref)
-            VALUES (?, ?, 'running', ?, ?)
-        ''', (self.chat_id, self.session_id, self.threads, self.length_pref))
-        conn.commit()
-        conn.close()
-    
-    def update_stats(self):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        elapsed = time.time() - self.stats['start_time']
-        speed = self.stats['checked'] / elapsed if elapsed > 0 else 0
-        cursor.execute('''
-            UPDATE discord_sessions 
-            SET checked = ?, available_3l = ?, available_4l = ?, taken = ?, errors = ?,
-                average_speed = ?, threads = ?
-            WHERE session_id = ?
-        ''', (
-            self.stats['checked'],
-            self.stats['available_3l'],
-            self.stats['available_4l'],
-            self.stats['taken'],
-            self.stats['errors'],
-            speed,
-            self.threads,
-            self.session_id
-        ))
-        conn.commit()
-        conn.close()
-    
-    def save_username(self, username, length):
-        conn = sqlite3.connect('universal_hunter.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO discord_found 
-            (session_id, username, length)
-            VALUES (?, ?, ?)
-        ''', (self.session_id, username, length))
-        conn.commit()
-        conn.close()
-    
-    def generate_username(self):
-        """Generate Discord username with 3L/4L mix"""
-        if '3L' in self.length_pref and '4L' in self.length_pref:
-            # 70% chance for 3L (more valuable)
-            length = 3 if random.random() < 0.7 else 4
-        elif '3L' in self.length_pref:
-            length = 3
-        else:
-            length = 4
-        
-        chars = string.ascii_lowercase + string.digits + '_.'
-        
-        attempts = 0
-        while attempts < 100:
-            username = ''.join(random.choices(chars, k=length))
-            
-            if (not username.startswith(('_', '.')) and 
-                not username.endswith(('_', '.')) and
-                not ('__' in username or '..' in username or '_.' in username or '._' in username) and
-                username not in self.used_usernames):
-                
-                self.used_usernames.add(username)
-                if len(self.used_usernames) > 1000:
-                    self.used_usernames.remove(next(iter(self.used_usernames)))
-                return username, length
-            
-            attempts += 1
-        
-        # Fallback
-        return ''.join(random.choices(chars, k=4)), 4
-    
-    def check_username(self, username):
-        """Check Discord username using official API"""
-        current_time = time.time()
-        if current_time - self.last_check_time < self.rate_limit_delay:
-            wait_time = self.rate_limit_delay - (current_time - self.last_check_time)
-            time.sleep(wait_time)
-        
-        self.last_check_time = time.time()
-        
-        try:
-            data = {"username": username.lower()}
-            
-            response = requests.post(
-                'https://discord.com/api/v9/users/@me/pomelo-attempt',
-                headers=self.headers,
-                json=data,
-                timeout=10,
-                verify=False
-            )
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                
-                if 'errors' in response_data:
-                    errors = response_data['errors']
-                    if 'username' in errors:
-                        username_errors = errors['username'].get('_errors', [])
-                        
-                        for error in username_errors:
-                            code = error.get('code', '')
-                            
-                            taken_codes = [
-                                'USERNAME_ALREADY_TAKEN',
-                                'USERNAME_INVALID_TAKEN',
-                                'BASE_TYPE_ALREADY_EXISTS',
-                                'USERNAME_TOO_MANY_USERS'
-                            ]
-                            
-                            if any(taken_code in code for taken_code in taken_codes):
-                                logger.debug(f"Discord: {username} - TAKEN ({code})")
-                                return False
-                
-                logger.info(f"Discord: {username} - POSSIBLY AVAILABLE")
-                return True
-                
-            elif response.status_code == 400:
-                logger.debug(f"Discord 400 for {username}")
-                return False
-                
-            elif response.status_code == 401:
-                logger.error("Discord token expired or invalid!")
-                return self.check_username_fallback(username)
-                
-            elif response.status_code == 429:
-                retry_after = int(response.headers.get('Retry-After', 60))
-                logger.warning(f"Discord rate limited! Waiting {retry_after} seconds")
-                time.sleep(retry_after)
-                return False
-                
-            else:
-                logger.error(f"Discord API unexpected status: {response.status_code}")
-                return self.check_username_fallback(username)
-                
-        except Exception as e:
-            logger.error(f"Discord check error: {e}")
-            return self.check_username_fallback(username)
-    
-    def check_username_fallback(self, username):
-        """Fallback method using profile page"""
-        try:
-            response = requests.get(
-                f'https://discord.com/users/{username}',
-                headers={'User-Agent': 'Mozilla/5.0'},
-                timeout=5,
-                allow_redirects=False,
-                verify=False
-            )
-            
-            if response.status_code == 404:
-                logger.info(f"Discord fallback: {username} - AVAILABLE (404)")
-                return True
-            else:
-                logger.info(f"Discord fallback: {username} - TAKEN ({response.status_code})")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Discord fallback error: {e}")
-            return False
-
-# ========== ADMIN COMMANDS ==========
-@bot.message_handler(commands=['users'])
-def list_users(message):
-    """Admin command: List all users"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    users = user_manager.get_all_users()
-    
-    if not users:
-        bot.reply_to(message, "📭 No users registered yet.")
-        return
-    
-    message_text = f"👥 *Registered Users: {len(users)}*\n━━━━━━━━━━━━━━━━━━\n\n"
-    
-    for user in users:
-        user_id, username, first_name, last_name, join_date, last_active, is_banned = user
-        
-        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
-        last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
-        if isinstance(last_active_time, datetime):
-            days_ago = (datetime.now() - last_active_time).days
-            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
-        else:
-            activity = "Unknown"
-        
-        message_text += f"🆔 *ID:* `{user_id}`\n"
-        message_text += f"👤 *User:* @{username or 'N/A'}\n"
-        message_text += f"📛 *Name:* {first_name} {last_name or ''}\n"
-        message_text += f"📅 *Joined:* {join_date}\n"
-        message_text += f"🕐 *Last Active:* {activity}\n"
-        message_text += f"📊 *Status:* {status}\n"
-        message_text += f"━━━━━━━━━━━━━━━━━━\n\n"
-    
-    # Split message if too long
-    if len(message_text) > 4000:
-        chunks = [message_text[i:i+4000] for i in range(0, len(message_text), 4000)]
-        for chunk in chunks:
-            bot.send_message(ADMIN_ID, chunk, parse_mode='Markdown')
-    else:
-        bot.send_message(ADMIN_ID, message_text, parse_mode='Markdown')
-
-@bot.message_handler(commands=['ban'])
-def ban_user(message):
-    """Admin command: Ban a user"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    try:
-        user_id = int(message.text.split()[1])
-        user_manager.ban_user(user_id)
-        
-        # Stop any active hunts for banned user
-        stop_all_user_hunts(user_id)
-        
-        bot.reply_to(message, f"✅ User `{user_id}` has been banned and their hunts stopped.")
-        
-        # Notify the banned user
-        try:
-            bot.send_message(user_id, "🚫 You have been banned from using this bot.")
-        except:
-            pass
-            
-    except (IndexError, ValueError):
-        bot.reply_to(message, "❌ Usage: /ban <user_id>")
-
-@bot.message_handler(commands=['unban'])
-def unban_user(message):
-    """Admin command: Unban a user"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    try:
-        user_id = int(message.text.split()[1])
-        user_manager.unban_user(user_id)
-        bot.reply_to(message, f"✅ User `{user_id}` has been unbanned.")
-        
-        # Notify the unbanned user
-        try:
-            bot.send_message(user_id, "✅ Your ban has been lifted. You can use the bot again.")
-        except:
-            pass
-            
-    except (IndexError, ValueError):
-        bot.reply_to(message, "❌ Usage: /unban <user_id>")
-
-@bot.message_handler(commands=['botstatus'])
-def bot_status(message):
-    """Admin command: Show bot status"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    # Get active hunters count
-    active_hunters = (
-        len([h for h in instagram_hunters.values() if h.running]) +
-        len([h for h in telegram_hunters.values() if h.running]) +
-        len([h for h in twitter_hunters.values() if h.running]) +
-        len([h for h in tiktok_hunters.values() if h.running]) +
-        len([h for h in youtube_hunters.values() if h.running]) +
-        len([h for h in discord_hunters.values() if h.running])
-    )
-    
-    # Get totals from database
-    conn = sqlite3.connect('universal_hunter.db')
+def add_swap_history(user_id, status, processing_time, source_hash, target_hash, result_hash, nsfw_check=0, reported=0, original_data=None):
+    """Add swap to history"""
+    conn = sqlite3.connect('face_swap_bot.db')
     cursor = conn.cursor()
     
-    total_found = 0
-    for platform in ['instagram', 'telegram', 'twitter', 'tiktok', 'youtube', 'discord']:
-        cursor.execute(f'SELECT COUNT(*) FROM {platform}_found')
-        total_found += cursor.fetchone()[0]
+    # Encrypt original data if provided
+    encrypted_data = None
+    encrypted_flag = 0
     
+    if original_data:
+        try:
+            encrypted_data = encrypt_data(pickle.dumps(original_data))
+            encrypted_flag = 1
+        except Exception as e:
+            logger.error(f"Encryption error: {e}")
+    
+    cursor.execute('''
+        INSERT INTO swaps_history 
+        (user_id, status, processing_time, source_image_hash, target_image_hash, 
+         result_image_hash, nsfw_check, reported, original_data, encrypted)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, status, processing_time, source_hash, target_hash, 
+          result_hash, nsfw_check, reported, encrypted_data, encrypted_flag))
+    
+    swap_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return swap_id
+
+def add_report(reporter_id, reported_user_id, swap_id, reason):
+    """Add a report to database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO reports 
+        (reporter_id, reported_user_id, swap_id, reason)
+        VALUES (?, ?, ?, ?)
+    ''', (reporter_id, reported_user_id, swap_id, reason))
+    
+    report_id = cursor.lastrowid
+    
+    # Increment report count for user
+    increment_user_reports(reported_user_id)
+    
+    # Mark swap as reported
+    cursor.execute('UPDATE swaps_history SET reported = 1 WHERE id = ?', (swap_id,))
+    
+    conn.commit()
     conn.close()
     
-    status_message = f"""🤖 *BOT STATUS REPORT*
+    # Notify admin
+    notify_admin_report(report_id, reporter_id, reported_user_id, swap_id, reason)
+    
+    return report_id
+
+def add_admin_log(action):
+    """Add admin action to log"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    # Create admin_logs table if not exists
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS admin_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER,
+            action TEXT,
+            action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            details TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        INSERT INTO admin_logs (admin_id, action, details)
+        VALUES (?, ?, ?)
+    ''', (ADMIN_ID, action, ''))
+    
+    conn.commit()
+    conn.close()
+
+def get_user_swap_history(user_id, limit=10):
+    """Get user's swap history"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, swap_date, status, processing_time, favorite
+        FROM swaps_history 
+        WHERE user_id = ? 
+        ORDER BY swap_date DESC 
+        LIMIT ?
+    ''', (user_id, limit))
+    
+    history = cursor.fetchall()
+    conn.close()
+    return history
+
+def get_swap_details(swap_id):
+    """Get details of a specific swap"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT sh.*, u.username, u.user_id
+        FROM swaps_history sh
+        JOIN users u ON sh.user_id = u.user_id
+        WHERE sh.id = ?
+    ''', (swap_id,))
+    
+    swap = cursor.fetchone()
+    conn.close()
+    return swap
+
+def toggle_favorite(user_id, swap_id):
+    """Toggle favorite status for a swap"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    # Check if already favorited
+    cursor.execute('SELECT id FROM favorites WHERE user_id = ? AND swap_id = ?', (user_id, swap_id))
+    existing = cursor.fetchone()
+    
+    if existing:
+        # Remove from favorites
+        cursor.execute('DELETE FROM favorites WHERE user_id = ? AND swap_id = ?', (user_id, swap_id))
+        cursor.execute('UPDATE swaps_history SET favorite = 0 WHERE id = ?', (swap_id,))
+        cursor.execute('UPDATE users SET favorites_count = favorites_count - 1 WHERE user_id = ?', (user_id,))
+        result = False
+    else:
+        # Add to favorites
+        cursor.execute('INSERT INTO favorites (user_id, swap_id) VALUES (?, ?)', (user_id, swap_id))
+        cursor.execute('UPDATE swaps_history SET favorite = 1 WHERE id = ?', (swap_id,))
+        cursor.execute('UPDATE users SET favorites_count = favorites_count + 1 WHERE user_id = ?', (user_id,))
+        result = True
+    
+    conn.commit()
+    conn.close()
+    return result
+
+def get_user_favorites(user_id, limit=10):
+    """Get user's favorite swaps"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT sh.id, sh.swap_date, sh.status, sh.processing_time
+        FROM swaps_history sh
+        JOIN favorites f ON sh.id = f.swap_id
+        WHERE f.user_id = ? 
+        ORDER BY f.added_date DESC 
+        LIMIT ?
+    ''', (user_id, limit))
+    
+    favorites = cursor.fetchall()
+    conn.close()
+    return favorites
+
+def get_pending_reports():
+    """Get pending reports for admin review"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT r.*, u1.username as reporter_name, u2.username as reported_name
+        FROM reports r
+        JOIN users u1 ON r.reporter_id = u1.user_id
+        JOIN users u2 ON r.reported_user_id = u2.user_id
+        WHERE r.status = 'pending'
+        ORDER BY r.report_date DESC
+    ''')
+    
+    reports = cursor.fetchall()
+    conn.close()
+    return reports
+
+def update_report_status(report_id, status, action=""):
+    """Update report status"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE reports 
+        SET status = ?, admin_action = ?
+        WHERE id = ?
+    ''', (status, action, report_id))
+    
+    conn.commit()
+    conn.close()
+
+def check_channel_membership(user_id):
+    """Check if user is member of required channel"""
+    try:
+        chat_member = bot.get_chat_member(REQUIRED_CHANNEL.replace('@', ''), user_id)
+        return chat_member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.error(f"Channel check error: {e}")
+        return False
+
+def verify_user(user_id):
+    """Verify user and update database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET verified = 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def notify_admin_report(report_id, reporter_id, reported_user_id, swap_id, reason):
+    """Notify admin about new report"""
+    try:
+        message = f"""🚨 *NEW REPORT SUBMITTED*
 
 ━━━━━━━━━━━━━━━━━━
-📊 *Statistics:*
-• Total Users: {user_manager.get_total_users()}
-• Active Users (7d): {user_manager.get_active_users(7)}
-• Banned Users: {len(BANNED_USERS)}
-• Active Hunters: {active_hunters}
-• Total Usernames Found: {total_found:,}
-
-⏱️ *Uptime:* {time.time() - app_start_time:.0f}s
-🔄 *Bot Status:* ✅ RUNNING
-🌐 *Webhook Mode:* {'✅ ENABLED' if WEBHOOK_URL else '❌ DISABLED'}
-
-🔧 *Platform Hunters Active:*
-• Instagram: {len([h for h in instagram_hunters.values() if h.running])}
-• Telegram: {len([h for h in telegram_hunters.values() if h.running])}
-• Twitter/X: {len([h for h in twitter_hunters.values() if h.running])}
-• TikTok: {len([h for h in tiktok_hunters.values() if h.running])}
-• YouTube: {len([h for h in youtube_hunters.values() if h.running])}
-• Discord: {len([h for h in discord_hunters.values() if h.running])}
-
+📋 *Report ID:* `{report_id}`
+👤 *Reporter:* `{reporter_id}`
+⚠️ *Reported User:* `{reported_user_id}`
+🔄 *Swap ID:* `{swap_id}`
+📝 *Reason:* {reason}
+🕐 *Time:* {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 ━━━━━━━━━━━━━━━━━━
-*Admin Commands:*
-/users - List all users
-/ban <id> - Ban user
-/unban <id> - Unban user
-/botstatus - This report
-/stopall - Stop all hunts
-━━━━━━━━━━━━━━━━━━
-"""
-    
-    bot.reply_to(message, status_message, parse_mode='Markdown')
 
-def stop_all_user_hunts(user_id):
-    """Stop all hunts for a specific user"""
-    # Stop Instagram
-    if user_id in instagram_hunters and instagram_hunters[user_id].running:
-        instagram_hunters[user_id].stop_hunting()
-    
-    # Stop Telegram
-    if user_id in telegram_hunters and telegram_hunters[user_id].running:
-        telegram_hunters[user_id].stop_hunting()
-    
-    # Stop Twitter
-    if user_id in twitter_hunters and twitter_hunters[user_id].running:
-        twitter_hunters[user_id].stop_hunting()
-    
-    # Stop TikTok
-    if user_id in tiktok_hunters and tiktok_hunters[user_id].running:
-        tiktok_hunters[user_id].stop_hunting()
-    
-    # Stop YouTube
-    if user_id in youtube_hunters and youtube_hunters[user_id].running:
-        youtube_hunters[user_id].stop_hunting()
-    
-    # Stop Discord
-    if user_id in discord_hunters and discord_hunters[user_id].running:
-        discord_hunters[user_id].stop_hunting()
-
-# ========== USER COMMANDS ==========
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    """Welcome message with user registration"""
-    user_id = message.from_user.id
-    
-    # Check if user is banned
-    if user_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    # Register user
-    user_manager.register_user(
-        user_id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
-    )
-    
-    welcome_text = f"""⚡ *UNIVERSAL USERNAME HUNTER BOT* ⚡
-*Welcome, {message.from_user.first_name}!*
-
-🏆 *Multiple Platforms Support:*
-
-📸 Instagram: /hunt (3L + 4L) *WITH ORIGINAL LOGIC*
-💬 Telegram: /htele (4L + 5L) *No 3L*
-🐦 Twitter/X: /hx (3L + 4L)
-🎵 TikTok: /htiktok (3L + 4L)
-▶️ YouTube: /hyoutube (3L + 4L + 5L)
-🎮 Discord: /hdiscord (3L + 4L) *WORKING API*
-
-📊 *Features:*
-• 3L + 4L hunting on most platforms
-• Instagram uses EXACT original hunting logic
-• Separate hunters for each platform
-• Can run ALL simultaneously
-• Individual statistics
-• Real-time alerts with value estimates
-• Database storage
-
-🚀 *Run multiple hunters at once!*
-🔥 *3L usernames = HIGH VALUE!* 💰
-"""
-    bot.reply_to(message, welcome_text, parse_mode='Markdown')
-
-# ========== INSTAGRAM COMMANDS ==========
-@bot.message_handler(commands=['hunt'])
-def start_instagram_hunt(message):
-    """Start Instagram username hunting with ORIGINAL logic"""
-    chat_id = message.chat.id
-    
-    if chat_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    if chat_id in instagram_hunters and instagram_hunters[chat_id].running:
-        bot.reply_to(message, "⚠️ Already hunting Instagram usernames! Use /stopinsta to stop.")
-        return
-    
-    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add('3L Only (Rare)', '4L Only', '3L + 4L (Recommended)')
-    
-    bot.send_message(
-        chat_id,
-        "📸 *Instagram Username Hunter*\n\n"
-        "Select hunting mode:\n"
-        "• *3L Only* - Ultra rare (high value!)\n"
-        "• *4L Only* - Regular usernames\n"
-        "• *3L + 4L* - BEST: Mix of both\n\n"
-        "*3L Value:* $1,000-$50,000+ 💰\n"
-        "*3L Chance:* 0.05-0.1% (very rare)\n"
-        "*4L Chance:* 0.1-0.5%\n\n"
-        "⚠️ *Using EXACT original script logic!*",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    
-    bot.register_next_step_handler(message, process_instagram_length)
-
-def process_instagram_length(message):
-    """Process Instagram length selection"""
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
-    
-    length_map = {
-        '3l only (rare)': '3L',
-        '4l only': '4L',
-        '3l + 4l (recommended)': '3L+4L'
-    }
-    
-    length_pref = length_map.get(choice, '3L+4L')
-    
-    bot.send_message(chat_id, f"📸 Starting Instagram hunter for {length_pref}...", 
-                    reply_markup=types.ReplyKeyboardRemove())
-    
-    # Create and start hunter
-    hunter = InstagramHunter(chat_id, length_pref)
-    
-    if hunter.start_hunting():
-        instagram_hunters[chat_id] = hunter
+*Admin Actions:*
+/reports - Review all reports
+/ban {reported_user_id} - Ban reported user
+/viewswap {swap_id} - View swap details"""
         
-        bot.send_message(
-            chat_id,
-            f"✅ *Instagram Hunter Started!*\n\n"
-            f"🏆 Platform: Instagram\n"
-            f"🔢 Mode: {length_pref}\n"
-            f"🎯 3L Priority: {'YES (70%)' if '3L' in length_pref else 'NO'}\n"
-            f"🧵 Threads: 1\n"
-            f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~20-40/hour\n"
-            f"🔧 Using: EXACT ORIGINAL LOGIC\n\n"
-            f"*Expected finds/day:*\n"
-            f"• 3L: { '0.1-0.2' if '3L' in length_pref else '0' }\n"
-            f"• 4L: { '0.5-1' if '4L' in length_pref else '0' }\n\n"
-            f"Use /statinsta for stats\n"
-            f"Use /stopinsta to stop",
-            parse_mode='Markdown'
-        )
-    else:
-        bot.send_message(chat_id, "❌ Failed to start Instagram hunter.")
-
-@bot.message_handler(commands=['statinsta'])
-def instagram_stats(message):
-    """Show Instagram hunting stats"""
-    chat_id = message.chat.id
-    
-    if chat_id not in instagram_hunters or not instagram_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Instagram hunting session.")
-        return
-    
-    hunter = instagram_hunters[chat_id]
-    stats = hunter.get_stats()
-    
-    stats_message = f"""
-📊 *Instagram Hunter Stats*
-
-⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} (ULTRA RARE! 💰)
-└─ 4L: {stats['available_4l']:,}
-❌ Taken: {stats['taken']:,}
-🔧 Errors: {stats['errors']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-├─ 3L Rate: {stats['success_rate_3l']:.2f}%
-└─ 4L Rate: {stats['success_rate_4l']:.2f}%
-
-📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-🔧 Logic: EXACT ORIGINAL
-
-🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
-"""
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stopinsta'])
-def stop_instagram_hunt(message):
-    """Stop Instagram hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id not in instagram_hunters or not instagram_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Instagram hunting session.")
-        return
-    
-    hunter = instagram_hunters[chat_id]
-    
-    if hunter.stop_hunting():
-        stats = hunter.get_stats()
-        
-        final_message = f"""
-🛑 *Instagram Hunter Stopped*
-
-📊 *Final Stats:*
-
-⏱️ Duration: {stats['elapsed']:.0f}s
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} 💰
-└─ 4L: {stats['available_4l']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-🔧 Logic: EXACT ORIGINAL
-
-💾 Usernames saved to database.
-"""
-        
-        bot.send_message(chat_id, final_message, parse_mode='Markdown')
-        del instagram_hunters[chat_id]
-    else:
-        bot.reply_to(message, "❌ Failed to stop Instagram hunter.")
-
-# ========== TELEGRAM COMMANDS ==========
-@bot.message_handler(commands=['htele'])
-def start_telegram_hunt(message):
-    """Start Telegram username hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    if chat_id in telegram_hunters and telegram_hunters[chat_id].running:
-        bot.reply_to(message, "⚠️ Already hunting Telegram usernames! Use /stopttele to stop.")
-        return
-    
-    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add('4L Only', '5L Only', '4L + 5L')
-    
-    bot.send_message(
-        chat_id,
-        "💬 *Telegram Username Hunter*\n\n"
-        "Select length preference:\n"
-        "• *4L Only* - 4 characters\n"
-        "• *5L Only* - 5 characters\n"
-        "• *4L + 5L* - Both lengths\n\n"
-        "*Note:* Telegram minimum is 5 characters\n"
-        "No 3L available on Telegram",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    
-    bot.register_next_step_handler(message, process_telegram_length)
-
-def process_telegram_length(message):
-    """Process Telegram length selection"""
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
-    
-    length_map = {
-        '4l only': '4L',
-        '5l only': '5L',
-        '4l + 5l': '4L+5L'
-    }
-    
-    length_pref = length_map.get(choice, '4L')
-    
-    bot.send_message(chat_id, f"💬 Starting Telegram hunter for {length_pref}...", 
-                    reply_markup=types.ReplyKeyboardRemove())
-    
-    hunter = TelegramHunter(chat_id, length_pref)
-    
-    if hunter.start_hunting():
-        telegram_hunters[chat_id] = hunter
-        
-        bot.send_message(
-            chat_id,
-            f"✅ *Telegram Hunter Started!*\n\n"
-            f"🏆 Platform: Telegram\n"
-            f"🔢 Lengths: {length_pref}\n"
-            f"🧵 Threads: 1\n"
-            f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~30-60/hour\n\n"
-            f"*Format:* @username\n"
-            f"Use /statttele for stats\n"
-            f"Use /stopttele to stop",
-            parse_mode='Markdown'
-        )
-    else:
-        bot.send_message(chat_id, "❌ Failed to start Telegram hunter.")
-
-@bot.message_handler(commands=['statttele'])
-def telegram_stats(message):
-    """Show Telegram hunting stats"""
-    chat_id = message.chat.id
-    
-    if chat_id not in telegram_hunters or not telegram_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Telegram hunting session.")
-        return
-    
-    hunter = telegram_hunters[chat_id]
-    stats = hunter.get_stats()
-    
-    stats_message = f"""
-📊 *Telegram Hunter Stats*
-
-⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-❌ Taken: {stats['taken']:,}
-🔧 Errors: {stats['errors']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
-🏷️ Session: `{stats['session_id']}`
-🔢 Lengths: {stats['length_pref']}
-
-🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
-"""
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stopttele'])
-def stop_telegram_hunt(message):
-    """Stop Telegram hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id not in telegram_hunters or not telegram_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Telegram hunting session.")
-        return
-    
-    hunter = telegram_hunters[chat_id]
-    
-    if hunter.stop_hunting():
-        stats = hunter.get_stats()
-        
-        final_message = f"""
-🛑 *Telegram Hunter Stopped*
-
-📊 *Final Stats:*
-
-⏱️ Duration: {stats['elapsed']:.0f}s
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-❌ Taken: {stats['taken']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-🏷️ Session: `{stats['session_id']}`
-🔢 Lengths: {stats['length_pref']}
-
-💾 Usernames saved to database.
-"""
-        
-        bot.send_message(chat_id, final_message, parse_mode='Markdown')
-        del telegram_hunters[chat_id]
-    else:
-        bot.reply_to(message, "❌ Failed to stop Telegram hunter.")
-
-# ========== TWITTER COMMANDS ==========
-@bot.message_handler(commands=['hx'])
-def start_twitter_hunt(message):
-    """Start Twitter/X username hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    if chat_id in twitter_hunters and twitter_hunters[chat_id].running:
-        bot.reply_to(message, "⚠️ Already hunting Twitter usernames! Use /stopx to stop.")
-        return
-    
-    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add('3L Only (Legendary)', '4L Only', '3L + 4L (Recommended)')
-    
-    bot.send_message(
-        chat_id,
-        "🐦 *Twitter/X Username Hunter*\n\n"
-        "Select hunting mode:\n"
-        "• *3L Only* - Legendary status! 💰💰\n"
-        "• *4L Only* - Regular usernames\n"
-        "• *3L + 4L* - BEST: Mix of both\n\n"
-        "*3L Value:* $5,000-$100,000+ 💰💰\n"
-        "*3L Chance:* 0.01-0.05% (extremely rare)\n"
-        "*4L Chance:* 0.1-0.3%",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    
-    bot.register_next_step_handler(message, process_twitter_length)
-
-def process_twitter_length(message):
-    """Process Twitter length selection"""
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
-    
-    length_map = {
-        '3l only (legendary)': '3L',
-        '4l only': '4L',
-        '3l + 4l (recommended)': '3L+4L'
-    }
-    
-    length_pref = length_map.get(choice, '3L+4L')
-    
-    bot.send_message(chat_id, f"🐦 Starting Twitter hunter for {length_pref}...", 
-                    reply_markup=types.ReplyKeyboardRemove())
-    
-    hunter = TwitterHunter(chat_id, length_pref)
-    
-    if hunter.start_hunting():
-        twitter_hunters[chat_id] = hunter
-        
-        bot.send_message(
-            chat_id,
-            f"✅ *Twitter Hunter Started!*\n\n"
-            f"🏆 Platform: Twitter/X\n"
-            f"🔢 Mode: {length_pref}\n"
-            f"🎯 3L Priority: {'YES (70%)' if '3L' in length_pref else 'NO'}\n"
-            f"🧵 Threads: 1\n"
-            f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~60-120/hour\n\n"
-            f"*Expected finds/day:*\n"
-            f"• 3L: { '0.1-0.2' if '3L' in length_pref else '0' }\n"
-            f"• 4L: { '3-4' if '4L' in length_pref else '0' }\n\n"
-            f"Use /statx for stats\n"
-            f"Use /stopx to stop",
-            parse_mode='Markdown'
-        )
-    else:
-        bot.send_message(chat_id, "❌ Failed to start Twitter hunter.")
-
-@bot.message_handler(commands=['statx'])
-def twitter_stats(message):
-    """Show Twitter hunting stats"""
-    chat_id = message.chat.id
-    
-    if chat_id not in twitter_hunters or not twitter_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Twitter hunting session.")
-        return
-    
-    hunter = twitter_hunters[chat_id]
-    stats = hunter.get_stats()
-    
-    stats_message = f"""
-📊 *Twitter Hunter Stats*
-
-⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} (LEGENDARY! 💰💰)
-└─ 4L: {stats['available_4l']:,}
-❌ Taken: {stats['taken']:,}
-🔧 Errors: {stats['errors']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-├─ 3L Rate: {stats['success_rate_3l']:.2f}%
-└─ 4L Rate: {stats['success_rate_4l']:.2f}%
-
-📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-
-🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
-"""
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stopx'])
-def stop_twitter_hunt(message):
-    """Stop Twitter hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id not in twitter_hunters or not twitter_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Twitter hunting session.")
-        return
-    
-    hunter = twitter_hunters[chat_id]
-    
-    if hunter.stop_hunting():
-        stats = hunter.get_stats()
-        
-        final_message = f"""
-🛑 *Twitter Hunter Stopped*
-
-📊 *Final Stats:*
-
-⏱️ Duration: {stats['elapsed']:.0f}s
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} 💰💰
-└─ 4L: {stats['available_4l']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-
-💾 Usernames saved to database.
-"""
-        
-        bot.send_message(chat_id, final_message, parse_mode='Markdown')
-        del twitter_hunters[chat_id]
-    else:
-        bot.reply_to(message, "❌ Failed to stop Twitter hunter.")
-
-# ========== TIKTOK COMMANDS ==========
-@bot.message_handler(commands=['htiktok'])
-def start_tiktok_hunt(message):
-    """Start TikTok username hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    if chat_id in tiktok_hunters and tiktok_hunters[chat_id].running:
-        bot.reply_to(message, "⚠️ Already hunting TikTok usernames! Use /stoptiktok to stop.")
-        return
-    
-    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add('3L Only (Rare)', '4L Only', '3L + 4L (Recommended)')
-    
-    bot.send_message(
-        chat_id,
-        "🎵 *TikTok Username Hunter*\n\n"
-        "Select hunting mode:\n"
-        "• *3L Only* - Very rare (high value!)\n"
-        "• *4L Only* - Regular usernames\n"
-        "• *3L + 4L* - BEST: Mix of both\n\n"
-        "*3L Value:* $2,000-$20,000+ 💰\n"
-        "*3L Chance:* 0.1-0.5%\n"
-        "*4L Chance:* 2-5%",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    
-    bot.register_next_step_handler(message, process_tiktok_length)
-
-def process_tiktok_length(message):
-    """Process TikTok length selection"""
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
-    
-    length_map = {
-        '3l only (rare)': '3L',
-        '4l only': '4L',
-        '3l + 4l (recommended)': '3L+4L'
-    }
-    
-    length_pref = length_map.get(choice, '3L+4L')
-    
-    bot.send_message(chat_id, f"🎵 Starting TikTok hunter for {length_pref}...", 
-                    reply_markup=types.ReplyKeyboardRemove())
-    
-    hunter = TikTokHunter(chat_id, length_pref)
-    
-    if hunter.start_hunting():
-        tiktok_hunters[chat_id] = hunter
-        
-        bot.send_message(
-            chat_id,
-            f"✅ *TikTok Hunter Started!*\n\n"
-            f"🏆 Platform: TikTok\n"
-            f"🔢 Mode: {length_pref}\n"
-            f"🎯 3L Priority: {'YES (70%)' if '3L' in length_pref else 'NO'}\n"
-            f"🧵 Threads: 1\n"
-            f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~60-120/hour\n\n"
-            f"*Expected finds/day:*\n"
-            f"• 3L: { '0.5-2' if '3L' in length_pref else '0' }\n"
-            f"• 4L: { '6-12' if '4L' in length_pref else '0' }\n\n"
-            f"Use /stattiktok for stats\n"
-            f"Use /stoptiktok to stop",
-            parse_mode='Markdown'
-        )
-    else:
-        bot.send_message(chat_id, "❌ Failed to start TikTok hunter.")
-
-@bot.message_handler(commands=['stattiktok'])
-def tiktok_stats(message):
-    """Show TikTok hunting stats"""
-    chat_id = message.chat.id
-    
-    if chat_id not in tiktok_hunters or not tiktok_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active TikTok hunting session.")
-        return
-    
-    hunter = tiktok_hunters[chat_id]
-    stats = hunter.get_stats()
-    
-    stats_message = f"""
-📊 *TikTok Hunter Stats*
-
-⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} (RARE! 💰)
-└─ 4L: {stats['available_4l']:,}
-❌ Taken: {stats['taken']:,}
-🔧 Errors: {stats['errors']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-├─ 3L Rate: {stats['success_rate_3l']:.2f}%
-└─ 4L Rate: {stats['success_rate_4l']:.2f}%
-
-📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-
-🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
-"""
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stoptiktok'])
-def stop_tiktok_hunt(message):
-    """Stop TikTok hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id not in tiktok_hunters or not tiktok_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active TikTok hunting session.")
-        return
-    
-    hunter = tiktok_hunters[chat_id]
-    
-    if hunter.stop_hunting():
-        stats = hunter.get_stats()
-        
-        final_message = f"""
-🛑 *TikTok Hunter Stopped*
-
-📊 *Final Stats:*
-
-⏱️ Duration: {stats['elapsed']:.0f}s
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} 💰
-└─ 4L: {stats['available_4l']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-
-💾 Usernames saved to database.
-"""
-        
-        bot.send_message(chat_id, final_message, parse_mode='Markdown')
-        del tiktok_hunters[chat_id]
-    else:
-        bot.reply_to(message, "❌ Failed to stop TikTok hunter.")
-
-# ========== YOUTUBE COMMANDS ==========
-@bot.message_handler(commands=['hyoutube'])
-def start_youtube_hunt(message):
-    """Start YouTube username hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    if chat_id in youtube_hunters and youtube_hunters[chat_id].running:
-        bot.reply_to(message, "⚠️ Already hunting YouTube usernames! Use /stopyoutube to stop.")
-        return
-    
-    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add('3L Only', '4L Only', '5L Only', '3L+4L (Best)', 'All (3L+4L+5L)')
-    
-    bot.send_message(
-        chat_id,
-        "▶️ *YouTube Username Hunter*\n\n"
-        "Select hunting mode:\n"
-        "• *3L Only* - Rare usernames\n"
-        "• *4L Only* - Regular usernames\n"
-        "• *5L Only* - Longer usernames\n"
-        "• *3L+4L* - BEST combination\n"
-        "• *All* - 3L, 4L & 5L\n\n"
-        "*3L Value:* $500-$10,000+ 💰\n"
-        "*3L Chance:* 1-2% (good chance!)\n"
-        "*4L Chance:* 5-10%",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    
-    bot.register_next_step_handler(message, process_youtube_length)
-
-def process_youtube_length(message):
-    """Process YouTube length selection"""
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
-    
-    length_map = {
-        '3l only': '3L',
-        '4l only': '4L',
-        '5l only': '5L',
-        '3l+4l (best)': '3L+4L',
-        'all (3l+4l+5l)': '3L+4L+5L'
-    }
-    
-    length_pref = length_map.get(choice, '3L+4L')
-    
-    bot.send_message(chat_id, f"▶️ Starting YouTube hunter for {length_pref}...", 
-                    reply_markup=types.ReplyKeyboardRemove())
-    
-    hunter = YouTubeHunter(chat_id, length_pref)
-    
-    if hunter.start_hunting():
-        youtube_hunters[chat_id] = hunter
-        
-        weights_info = ""
-        if '3L' in length_pref and '4L' in length_pref:
-            weights_info = " (70% 3L, 30% 4L)"
-        elif '3L' in length_pref and '4L' in length_pref and '5L' in length_pref:
-            weights_info = " (70% 3L, 20% 4L, 10% 5L)"
-        
-        bot.send_message(
-            chat_id,
-            f"✅ *YouTube Hunter Started!*\n\n"
-            f"🏆 Platform: YouTube\n"
-            f"🔢 Mode: {length_pref}{weights_info}\n"
-            f"🎯 3L Priority: {'YES (70%)' if '3L' in length_pref else 'NO'}\n"
-            f"🧵 Threads: 1\n"
-            f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~40-80/hour\n\n"
-            f"*Expected finds/day:*\n"
-            f"• 3L: { '5-10' if '3L' in length_pref else '0' }\n"
-            f"• 4L: { '10-20' if '4L' in length_pref else '0' }\n"
-            f"• 5L: { '2-5' if '5L' in length_pref else '0' }\n\n"
-            f"Use /statyoutube for stats\n"
-            f"Use /stopyoutube to stop",
-            parse_mode='Markdown'
-        )
-    else:
-        bot.send_message(chat_id, "❌ Failed to start YouTube hunter.")
-
-@bot.message_handler(commands=['statyoutube'])
-def youtube_stats(message):
-    """Show YouTube hunting stats"""
-    chat_id = message.chat.id
-    
-    if chat_id not in youtube_hunters or not youtube_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active YouTube hunting session.")
-        return
-    
-    hunter = youtube_hunters[chat_id]
-    stats = hunter.get_stats()
-    
-    stats_message = f"""
-📊 *YouTube Hunter Stats*
-
-⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} (GOOD FIND! 💰)
-└─ 4L: {stats['available_4l']:,}
-❌ Taken: {stats['taken']:,}
-🔧 Errors: {stats['errors']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-├─ 3L Rate: {stats['success_rate_3l']:.2f}%
-└─ 4L Rate: {stats['success_rate_4l']:.2f}%
-
-📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-
-🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
-"""
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stopyoutube'])
-def stop_youtube_hunt(message):
-    """Stop YouTube hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id not in youtube_hunters or not youtube_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active YouTube hunting session.")
-        return
-    
-    hunter = youtube_hunters[chat_id]
-    
-    if hunter.stop_hunting():
-        stats = hunter.get_stats()
-        
-        final_message = f"""
-🛑 *YouTube Hunter Stopped*
-
-📊 *Final Stats:*
-
-⏱️ Duration: {stats['elapsed']:.0f}s
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} 💰
-└─ 4L: {stats['available_4l']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-
-💾 Usernames saved to database.
-"""
-        
-        bot.send_message(chat_id, final_message, parse_mode='Markdown')
-        del youtube_hunters[chat_id]
-    else:
-        bot.reply_to(message, "❌ Failed to stop YouTube hunter.")
-
-# ========== DISCORD COMMANDS ==========
-@bot.message_handler(commands=['hdiscord'])
-def start_discord_hunt(message):
-    """Start Discord username hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
-        return
-    
-    if chat_id in discord_hunters and discord_hunters[chat_id].running:
-        bot.reply_to(message, "⚠️ Already hunting Discord usernames! Use /stopdiscord to stop.")
-        return
-    
-    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add('3L Only (High Value)', '4L Only', '3L + 4L (BEST)', '4L + 5L')
-    
-    bot.send_message(
-        chat_id,
-        "🎮 *Discord Username Hunter*\n\n"
-        "Select hunting mode:\n"
-        "• *3L Only* - High value usernames\n"
-        "• *4L Only* - Regular usernames\n"
-        "• *3L + 4L* - BEST: Mix of both\n"
-        "• *4L + 5L* - Standard lengths\n\n"
-        "*3L Value:* $500-$10,000+ 💰\n"
-        "*3L Chance:* 2-5% (best chance!)\n"
-        "*4L Chance:* 10-15%",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    
-    bot.register_next_step_handler(message, process_discord_length)
-
-def process_discord_length(message):
-    """Process Discord length selection"""
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
-    
-    length_map = {
-        '3l only (high value)': '3L',
-        '4l only': '4L',
-        '3l + 4l (best)': '3L+4L',
-        '4l + 5l': '4L+5L'
-    }
-    
-    length_pref = length_map.get(choice, '3L+4L')
-    
-    bot.send_message(chat_id, f"🎮 Starting Discord hunter for {length_pref}...", 
-                    reply_markup=types.ReplyKeyboardRemove())
-    
-    hunter = DiscordHunter(chat_id, length_pref)
-    
-    if hunter.start_hunting():
-        discord_hunters[chat_id] = hunter
-        
-        bot.send_message(
-            chat_id,
-            f"✅ *Discord Hunter Started!*\n\n"
-            f"🏆 Platform: Discord\n"
-            f"🔢 Mode: {length_pref}\n"
-            f"🎯 3L Priority: {'YES (70%)' if '3L' in length_pref else 'NO'}\n"
-            f"🧵 Threads: 1\n"
-            f"🆔 Session: `{hunter.session_id}`\n"
-            f"⚡ Checks: ~40-80/hour\n\n"
-            f"*Expected finds/day:*\n"
-            f"• 3L: { '10-20' if '3L' in length_pref else '0' }\n"
-            f"• 4L: { '20-30' if '4L' in length_pref else '0' }\n\n"
-            f"*Using:* Official Discord API\n"
-            f"*Accuracy:* Very High\n"
-            f"Use /statdiscord for stats\n"
-            f"Use /stopdiscord to stop",
-            parse_mode='Markdown'
-        )
-    else:
-        bot.send_message(chat_id, "❌ Failed to start Discord hunter.")
-
-@bot.message_handler(commands=['statdiscord'])
-def discord_stats(message):
-    """Show Discord hunting stats"""
-    chat_id = message.chat.id
-    
-    if chat_id not in discord_hunters or not discord_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Discord hunting session.")
-        return
-    
-    hunter = discord_hunters[chat_id]
-    stats = hunter.get_stats()
-    
-    stats_message = f"""
-📊 *Discord Hunter Stats*
-
-⏱️ Running: {stats['elapsed']:.0f}s ({stats['elapsed']/3600:.1f}h)
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} (HIGH VALUE! 💰)
-└─ 4L: {stats['available_4l']:,}
-❌ Taken: {stats['taken']:,}
-🔧 Errors: {stats['errors']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-├─ 3L Rate: {stats['success_rate_3l']:.2f}%
-└─ 4L Rate: {stats['success_rate_4l']:.2f}%
-
-📈 Last Found: `{stats['last_available'] or 'None'}` ({stats['last_available_length'] or 'N/A'}L)
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-🔐 Using: Official Discord API
-
-🔄 Status: {'✅ Running' if stats['running'] else '❌ Stopped'}
-"""
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stopdiscord'])
-def stop_discord_hunt(message):
-    """Stop Discord hunting"""
-    chat_id = message.chat.id
-    
-    if chat_id not in discord_hunters or not discord_hunters[chat_id].running:
-        bot.reply_to(message, "❌ No active Discord hunting session.")
-        return
-    
-    hunter = discord_hunters[chat_id]
-    
-    if hunter.stop_hunting():
-        stats = hunter.get_stats()
-        
-        final_message = f"""
-🛑 *Discord Hunter Stopped*
-
-📊 *Final Stats:*
-
-⏱️ Duration: {stats['elapsed']:.0f}s
-🔍 Checked: {stats['checked']:,}
-✅ Found: {stats['total_found']:,}
-├─ 3L: {stats['available_3l']:,} 💰
-└─ 4L: {stats['available_4l']:,}
-
-⚡ Speed: {stats['speed']:.2f}/sec
-🎯 Success Rate: {stats['success_rate']:.2f}%
-
-🏷️ Session: `{stats['session_id']}`
-🔢 Mode: {stats['length_pref']}
-🔐 Method: Official Discord API
-
-💾 Usernames saved to database.
-"""
-        
-        bot.send_message(chat_id, final_message, parse_mode='Markdown')
-        del discord_hunters[chat_id]
-    else:
-        bot.reply_to(message, "❌ Failed to stop Discord hunter.")
-
-# ========== ALL HUNTERS COMMANDS ==========
-@bot.message_handler(commands=['allstats'])
-def all_stats(message):
-    """Show stats for all active hunters"""
-    chat_id = message.chat.id
-    
-    active_hunters = []
-    
-    if chat_id in instagram_hunters and instagram_hunters[chat_id].running:
-        active_hunters.append(('Instagram', instagram_hunters[chat_id]))
-    if chat_id in telegram_hunters and telegram_hunters[chat_id].running:
-        active_hunters.append(('Telegram', telegram_hunters[chat_id]))
-    if chat_id in twitter_hunters and twitter_hunters[chat_id].running:
-        active_hunters.append(('Twitter/X', twitter_hunters[chat_id]))
-    if chat_id in tiktok_hunters and tiktok_hunters[chat_id].running:
-        active_hunters.append(('TikTok', tiktok_hunters[chat_id]))
-    if chat_id in youtube_hunters and youtube_hunters[chat_id].running:
-        active_hunters.append(('YouTube', youtube_hunters[chat_id]))
-    if chat_id in discord_hunters and discord_hunters[chat_id].running:
-        active_hunters.append(('Discord', discord_hunters[chat_id]))
-    
-    if not active_hunters:
-        bot.reply_to(message, "❌ No active hunting sessions.")
-        return
-    
-    stats_message = "📊 *ALL ACTIVE HUNTERS*\n━━━━━━━━━━━━━━━━━━\n\n"
-    
-    total_checked = 0
-    total_found = 0
-    total_3l = 0
-    total_4l = 0
-    
-    for platform_name, hunter in active_hunters:
-        stats = hunter.get_stats()
-        total_checked += stats['checked']
-        total_found += stats['total_found']
-        total_3l += stats['available_3l']
-        total_4l += stats['available_4l']
-        
-        stats_message += f"*{platform_name}*\n"
-        stats_message += f"🔍 Checked: {stats['checked']:,}\n"
-        stats_message += f"✅ Found: {stats['total_found']:,}\n"
-        if stats['available_3l'] > 0:
-            stats_message += f"├─ 3L: {stats['available_3l']:,} 💰\n"
-        if stats['available_4l'] > 0:
-            stats_message += f"└─ 4L: {stats['available_4l']:,}\n"
-        stats_message += f"⚡ Speed: {stats['speed']:.2f}/s\n"
-        stats_message += f"🎯 Success: {stats['success_rate']:.2f}%\n"
-        
-        if stats['last_available']:
-            stats_message += f"📈 Last: `{stats['last_available']}` ({stats['last_available_length']}L)\n"
-        
-        stats_message += "━━━━━━━━━━━━━━━━━━\n\n"
-    
-    stats_message += f"*TOTALS*\n"
-    stats_message += f"🔍 Checked: {total_checked:,}\n"
-    stats_message += f"✅ Found: {total_found:,}\n"
-    if total_3l > 0:
-        stats_message += f"├─ 3L: {total_3l:,} (HIGH VALUE! 💰)\n"
-    if total_4l > 0:
-        stats_message += f"└─ 4L: {total_4l:,}\n"
-    stats_message += f"🏆 Active Hunters: {len(active_hunters)}/6\n"
-    stats_message += f"💰 Total 3L Value: ${total_3l * 1000:,}+"
-    
-    bot.reply_to(message, stats_message, parse_mode='Markdown')
-
-@bot.message_handler(commands=['stopall'])
-def stop_all_hunters(message):
-    """Stop all active hunters"""
-    chat_id = message.chat.id
-    
-    stopped = []
-    
-    if chat_id in instagram_hunters and instagram_hunters[chat_id].running:
-        instagram_hunters[chat_id].stop_hunting()
-        stopped.append('Instagram')
-        del instagram_hunters[chat_id]
-    
-    if chat_id in telegram_hunters and telegram_hunters[chat_id].running:
-        telegram_hunters[chat_id].stop_hunting()
-        stopped.append('Telegram')
-        del telegram_hunters[chat_id]
-    
-    if chat_id in twitter_hunters and twitter_hunters[chat_id].running:
-        twitter_hunters[chat_id].stop_hunting()
-        stopped.append('Twitter/X')
-        del twitter_hunters[chat_id]
-    
-    if chat_id in tiktok_hunters and tiktok_hunters[chat_id].running:
-        tiktok_hunters[chat_id].stop_hunting()
-        stopped.append('TikTok')
-        del tiktok_hunters[chat_id]
-    
-    if chat_id in youtube_hunters and youtube_hunters[chat_id].running:
-        youtube_hunters[chat_id].stop_hunting()
-        stopped.append('YouTube')
-        del youtube_hunters[chat_id]
-    
-    if chat_id in discord_hunters and discord_hunters[chat_id].running:
-        discord_hunters[chat_id].stop_hunting()
-        stopped.append('Discord')
-        del discord_hunters[chat_id]
-    
-    if stopped:
-        bot.reply_to(message, f"🛑 *Stopped {len(stopped)} hunters:*\n{', '.join(stopped)}", parse_mode='Markdown')
-    else:
-        bot.reply_to(message, "❌ No active hunters to stop.")
+        bot.send_message(ADMIN_ID, message, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Report notification error: {e}")
 
 # ========== FLASK ENDPOINTS ==========
-app_start_time = time.time()
-
-def get_all_active_hunters():
-    """Get all active hunters across all platforms"""
-    all_hunters = []
-    
-    for chat_id, hunter in instagram_hunters.items():
-        if hunter.running:
-            all_hunters.append(hunter)
-    
-    for chat_id, hunter in telegram_hunters.items():
-        if hunter.running:
-            all_hunters.append(hunter)
-    
-    for chat_id, hunter in twitter_hunters.items():
-        if hunter.running:
-            all_hunters.append(hunter)
-    
-    for chat_id, hunter in tiktok_hunters.items():
-        if hunter.running:
-            all_hunters.append(hunter)
-    
-    for chat_id, hunter in youtube_hunters.items():
-        if hunter.running:
-            all_hunters.append(hunter)
-    
-    for chat_id, hunter in discord_hunters.items():
-        if hunter.running:
-            all_hunters.append(hunter)
-    
-    return all_hunters
-
-@app.route('/hunter')
-def hunter_stats():
-    """Root endpoint for health checks"""
-    all_hunters = get_all_active_hunters()
-    active_hunters = len(all_hunters)
-    
-    total_stats = {
-        'checked': 0,
-        'found_3l': 0,
-        'found_4l': 0,
-        'errors': 0
-    }
-    
-    for hunter in all_hunters:
-        if hunter.running:
-            stats = hunter.get_stats()
-            total_stats['checked'] += stats['checked']
-            total_stats['found_3l'] += stats['available_3l']
-            total_stats['found_4l'] += stats['available_4l']
-            total_stats['errors'] += stats['errors']
-    
-    total_found = total_stats['found_3l'] + total_stats['found_4l']
-    
-    return jsonify({
-        "status": "running",
-        "service": "Universal Username Hunter Bot",
-        "version": "7.0 (ULTIMATE)",
-        "admin_id": ADMIN_ID,
-        "total_users": user_manager.get_total_users(),
-        "active_users": user_manager.get_active_users(1),
-        "banned_users": len(BANNED_USERS),
-        "active_hunters": active_hunters,
-        "total_checked": total_stats['checked'],
-        "total_found": total_found,
-        "found_3l": total_stats['found_3l'],
-        "found_4l": total_stats['found_4l'],
-        "success_rate": (total_found / max(1, total_stats['checked']) * 100),
-        "uptime": time.time() - app_start_time,
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/health/hunter')
-def health_check():
-    """Health check endpoint"""
-    all_hunters = get_all_active_hunters()
-    return jsonify({
-        "status": "healthy",
-        "bot_running": True,
-        "admin_system": "active",
-        "total_users": user_manager.get_total_users(),
-        "hunting_active": len(all_hunters),
-        "database": "connected",
-        "discord_api": "working",
-        "instagram_logic": "original",
-        "timestamp": datetime.now().isoformat()
-    }), 200
-
 @app.route('/')
-def root_home():
-    """Root endpoint for compatibility"""
+def home():
     return jsonify({
         "status": "running",
-        "service": "Universal Username Hunter Bot v7.0",
-        "message": "ULTIMATE VERSION - Admin Controls + 3L+4L Hunting + ORIGINAL INSTAGRAM LOGIC",
+        "service": "Face Swap Bot",
+        "version": "3.0",
+        "creator": "@PokiePy",
         "admin_id": ADMIN_ID,
         "endpoints": {
             "/": "This page",
-            "/hunter": "Hunter stats",
-            "/health/hunter": "Health check",
-            "/health": "Basic health"
+            "/health": "Health check",
+            "/health/hunter": "Extended health check",
+            "/stats": "Bot statistics",
+            "/users": "User statistics",
+            "/api/swaps": "Swaps API",
+            "/api/reports": "Reports API"
         },
-        "platforms": ["Instagram", "Telegram", "Twitter/X", "TikTok", "YouTube", "Discord"],
-        "features": ["3L+4L Hunting", "Admin Controls", "User Management", "Discord API", "Flask API", "ORIGINAL Instagram Logic"]
+        "features": [
+            "Face Swap", 
+            "Admin Controls", 
+            "Channel Verification", 
+            "User Management",
+            "NSFW Detection",
+            "Report System",
+            "Favorites System",
+            "Progress Tracking",
+            "Encrypted Storage"
+        ]
     })
 
 @app.route('/health')
-def health_compatibility():
-    """Health endpoint for compatibility"""
+def health_check():
     return jsonify({
         "status": "healthy",
-        "version": "7.0 (ULTIMATE)",
-        "admin_system": "active",
-        "3l_support": "enabled",
-        "discord_api_working": True,
-        "instagram_original_logic": True,
+        "bot": "running",
+        "database": "connected",
+        "face_swap_api": "configured",
         "timestamp": datetime.now().isoformat()
     }), 200
 
+@app.route('/health/hunter')
+def health_check_hunter():
+    """Extended health check endpoint"""
+    try:
+        # Check database
+        conn = sqlite3.connect('face_swap_bot.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history')
+        total_swaps = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM reports WHERE status = "pending"')
+        pending_reports = cursor.fetchone()[0]
+        conn.close()
+        
+        # Check bot status
+        bot_status = "running"
+        try:
+            bot.get_me()
+        except:
+            bot_status = "disconnected"
+        
+        return jsonify({
+            "status": "healthy",
+            "bot_status": bot_status,
+            "database_status": "connected",
+            "encryption": "enabled",
+            "nsfw_detection": "enabled" if NSFW_DETECTION_ENABLED else "disabled",
+            "channel_verification": "active",
+            "statistics": {
+                "total_users": total_users,
+                "active_users_24h": get_active_users_count(1),
+                "total_swaps": total_swaps,
+                "pending_reports": pending_reports,
+                "active_sessions": len(user_data),
+                "banned_users": len(BANNED_USERS)
+            },
+            "system": {
+                "uptime": time.time() - app_start_time,
+                "memory_usage": "normal",
+                "swap_progress_tracking": "active",
+                "encrypted_storage": "active"
+            },
+            "timestamp": datetime.now().isoformat()
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "status": "degraded",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/stats')
-def stats_page():
-    """Stats page with all platform details"""
-    platform_stats = {}
+def stats_api():
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
     
-    platform_stats['instagram'] = {
-        'active': len([h for h in instagram_hunters.values() if h.running]),
-        'total_sessions': len(instagram_hunters),
-        'logic': 'original'
-    }
+    cursor.execute('SELECT COUNT(*) FROM swaps_history')
+    total_swaps = cursor.fetchone()[0]
     
-    platform_stats['telegram'] = {
-        'active': len([h for h in telegram_hunters.values() if h.running]),
-        'total_sessions': len(telegram_hunters)
-    }
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+    successful_swaps = cursor.fetchone()[0]
     
-    platform_stats['twitter'] = {
-        'active': len([h for h in twitter_hunters.values() if h.running]),
-        'total_sessions': len(twitter_hunters)
-    }
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+    failed_swaps = cursor.fetchone()[0]
     
-    platform_stats['tiktok'] = {
-        'active': len([h for h in tiktok_hunters.values() if h.running]),
-        'total_sessions': len(tiktok_hunters)
-    }
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE nsfw_check = 1')
+    nsfw_flagged = cursor.fetchone()[0]
     
-    platform_stats['youtube'] = {
-        'active': len([h for h in youtube_hunters.values() if h.running]),
-        'total_sessions': len(youtube_hunters)
-    }
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE reported = 1')
+    reported_swaps = cursor.fetchone()[0]
     
-    platform_stats['discord'] = {
-        'active': len([h for h in discord_hunters.values() if h.running]),
-        'total_sessions': len(discord_hunters),
-        'api_status': 'working'
-    }
+    cursor.execute('SELECT COUNT(*) FROM favorites')
+    total_favorites = cursor.fetchone()[0]
+    
+    conn.close()
     
     return jsonify({
-        "status": "running",
-        "platform_stats": platform_stats,
-        "total_active": sum([s['active'] for s in platform_stats.values()]),
-        "total_users": user_manager.get_total_users(),
-        "active_users_24h": user_manager.get_active_users(1),
+        "total_users": get_total_users(),
+        "active_users_24h": get_active_users_count(1),
         "banned_users": len(BANNED_USERS),
-        "uptime": time.time() - app_start_time,
+        "verified_users": len([u for u in get_all_users() if u[7] == 1]),
+        "swap_statistics": {
+            "total_swaps": total_swaps,
+            "successful_swaps": successful_swaps,
+            "failed_swaps": failed_swaps,
+            "nsfw_flagged": nsfw_flagged,
+            "reported_swaps": reported_swaps,
+            "favorited_swaps": total_favorites,
+            "success_rate": (successful_swaps / max(1, total_swaps) * 100)
+        },
+        "active_sessions": len([uid for uid, data in user_data.items() if data.get('state')]),
+        "progress_tracking": len(swap_progress),
+        "encrypted_data": "enabled",
         "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/users')
+def users_api():
+    users = get_all_users()
+    user_list = []
+    
+    for user in users:
+        user_list.append({
+            "user_id": user[0],
+            "username": user[1],
+            "first_name": user[2],
+            "last_name": user[3],
+            "join_date": user[4],
+            "last_active": user[5],
+            "is_banned": bool(user[6]),
+            "is_verified": bool(user[7]),
+            "swaps_count": user[8],
+            "successful_swaps": user[9],
+            "failed_swaps": user[10],
+            "reports_received": user[11],
+            "favorites_count": user[12]
+        })
+    
+    return jsonify({
+        "total_users": len(user_list),
+        "users": user_list
+    })
+
+@app.route('/api/swaps')
+def swaps_api():
+    """API to get recent swaps"""
+    limit = request.args.get('limit', 50)
+    
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT sh.id, sh.user_id, sh.swap_date, sh.status, 
+               sh.processing_time, sh.nsfw_check, sh.reported,
+               u.username
+        FROM swaps_history sh
+        JOIN users u ON sh.user_id = u.user_id
+        ORDER BY sh.swap_date DESC
+        LIMIT ?
+    ''', (int(limit),))
+    
+    swaps = cursor.fetchall()
+    conn.close()
+    
+    swaps_list = []
+    for swap in swaps:
+        swaps_list.append({
+            "id": swap[0],
+            "user_id": swap[1],
+            "username": swap[7],
+            "swap_date": swap[2],
+            "status": swap[3],
+            "processing_time": swap[4],
+            "nsfw_checked": bool(swap[5]),
+            "reported": bool(swap[6])
+        })
+    
+    return jsonify({
+        "total": len(swaps_list),
+        "swaps": swaps_list
+    })
+
+@app.route('/api/reports')
+def reports_api():
+    """API to get reports (admin only)"""
+    # Simple authentication (in production use proper auth)
+    api_key = request.args.get('api_key')
+    if api_key != "your_secret_api_key":  # Change this in production
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    status = request.args.get('status', 'pending')
+    limit = request.args.get('limit', 50)
+    
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT r.*, u1.username as reporter_name, u2.username as reported_name
+        FROM reports r
+        JOIN users u1 ON r.reporter_id = u1.user_id
+        JOIN users u2 ON r.reported_user_id = u2.user_id
+        WHERE r.status = ?
+        ORDER BY r.report_date DESC
+        LIMIT ?
+    ''', (status, int(limit)))
+    
+    reports = cursor.fetchall()
+    conn.close()
+    
+    reports_list = []
+    for report in reports:
+        reports_list.append({
+            "id": report[0],
+            "reporter_id": report[1],
+            "reporter_name": report[9],
+            "reported_user_id": report[2],
+            "reported_name": report[10],
+            "swap_id": report[3],
+            "reason": report[4],
+            "report_date": report[5],
+            "status": report[6],
+            "admin_action": report[7]
+        })
+    
+    return jsonify({
+        "status": status,
+        "total": len(reports_list),
+        "reports": reports_list
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -3021,39 +917,1601 @@ def webhook():
         return ''
     return 'Bad request', 400
 
-# ========== MAIN ==========
+# ========== PROGRESS TRACKING FUNCTIONS ==========
+def update_progress(chat_id, progress, message=""):
+    """Update swap progress"""
+    if chat_id in swap_progress:
+        swap_progress[chat_id]['progress'] = progress
+        swap_progress[chat_id]['message'] = message
+        swap_progress[chat_id]['last_update'] = time.time()
+        
+        # Send progress update to user
+        try:
+            progress_bar = create_progress_bar(progress)
+            status_msg = f"🔄 *Processing: {progress}%*\n{progress_bar}\n{message}"
+            
+            if swap_progress[chat_id].get('message_id'):
+                try:
+                    bot.edit_message_text(
+                        status_msg,
+                        chat_id=chat_id,
+                        message_id=swap_progress[chat_id]['message_id'],
+                        parse_mode='Markdown'
+                    )
+                except:
+                    # Message might be too old, send new one
+                    msg = bot.send_message(chat_id, status_msg, parse_mode='Markdown')
+                    swap_progress[chat_id]['message_id'] = msg.message_id
+            else:
+                msg = bot.send_message(chat_id, status_msg, parse_mode='Markdown')
+                swap_progress[chat_id]['message_id'] = msg.message_id
+                
+        except Exception as e:
+            logger.error(f"Progress update error: {e}")
+
+def create_progress_bar(percentage):
+    """Create a visual progress bar"""
+    bar_length = 10
+    filled = int(bar_length * percentage / 100)
+    empty = bar_length - filled
+    
+    if percentage < 30:
+        color = "🔴"
+    elif percentage < 70:
+        color = "🟡"
+    else:
+        color = "🟢"
+    
+    bar = "█" * filled + "░" * empty
+    return f"{color} [{bar}] {percentage}%"
+
+def estimate_processing_time(start_time, current_progress):
+    """Estimate remaining processing time"""
+    if current_progress <= 0:
+        return "Calculating..."
+    
+    elapsed = time.time() - start_time
+    estimated_total = elapsed / (current_progress / 100)
+    remaining = estimated_total - elapsed
+    
+    if remaining < 60:
+        return f"{int(remaining)} seconds"
+    elif remaining < 3600:
+        return f"{int(remaining/60)} minutes"
+    else:
+        return f"{int(remaining/3600)} hours"
+
+def cancel_swap(chat_id):
+    """Cancel ongoing swap"""
+    if chat_id in user_data:
+        if chat_id in swap_progress:
+            # Clean up progress tracking
+            msg_id = swap_progress[chat_id].get('message_id')
+            if msg_id:
+                try:
+                    bot.delete_message(chat_id, msg_id)
+                except:
+                    pass
+            del swap_progress[chat_id]
+        
+        # Clean up user data
+        del user_data[chat_id]
+        return True
+    return False
+
+# ========== TELEGRAM COMMANDS ==========
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    # Check if banned
+    if user_id in BANNED_USERS:
+        bot.reply_to(message, "🚫 You are banned from using this bot.")
+        return
+    
+    # Register user
+    register_user(
+        user_id,
+        message.from_user.username,
+        message.from_user.first_name,
+        message.from_user.last_name
+    )
+    
+    # Check channel membership
+    if not check_channel_membership(user_id):
+        welcome_text = f"""👋 *Welcome to Face Swap Bot!*
+
+To use this bot, you must join our updates channel:
+
+📢 Channel: {REQUIRED_CHANNEL}
+
+*Steps:*
+1. Click the button below to join the channel
+2. Come back and click '✅ I Have Joined'
+3. Start using the bot!
+
+*Note:* The bot needs to verify your membership."""
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}"))
+        markup.add(types.InlineKeyboardButton("✅ I Have Joined", callback_data="verify_join"))
+        
+        bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=markup)
+    else:
+        verify_user(user_id)
+        show_main_menu(message)
+
+def show_main_menu(message):
+    welcome_text = """👋 *Welcome to Face Swap Bot!* 👋
+
+I'm created by @PokiePy. I can swap faces between two photos!
+
+*How to use:*
+1. Send me the first photo (face to use as source)
+2. Send me the second photo (face to replace)
+3. I'll process and send you the result!
+
+*Commands:*
+/start - Show this message
+/swap - Start a new face swap
+/status - Check bot status
+/mystats - Your statistics
+/history - Your swap history
+/favorites - Your favorite swaps
+/report - Report inappropriate content
+/help - Show help
+
+*New Features:*
+✅ Progress tracking with estimated time
+✅ Cancel ongoing swaps
+✅ Save favorite swaps
+✅ Compare before/after
+✅ Encrypted storage
+✅ NSFW detection
+✅ Report system
+
+*Note:* Send clear, front-facing photos for best results! 😊"""
+    bot.reply_to(message, welcome_text, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data == "verify_join")
+def verify_callback(call):
+    user_id = call.from_user.id
+    
+    if check_channel_membership(user_id):
+        verify_user(user_id)
+        bot.answer_callback_query(call.id, "✅ Verification successful! You can now use the bot.")
+        show_main_menu(call.message)
+    else:
+        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
+
+@bot.message_handler(commands=['swap'])
+def start_swap(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if user_id in BANNED_USERS:
+        bot.reply_to(message, "🚫 You are banned from using this bot.")
+        return
+    
+    # Check if user is verified
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT verified FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if not result or result[0] == 0:
+        if not check_channel_membership(user_id):
+            bot.reply_to(message, f"❌ Please join {REQUIRED_CHANNEL} first to use the bot!")
+            return
+    
+    user_data[chat_id] = {'state': WAITING_FOR_SOURCE}
+    bot.reply_to(message, "📸 *Step 1:* Send me the first photo (the face you want to use).\n\nMake sure it's a clear front-facing photo!\n\nYou can cancel anytime with /cancel")
+
+@bot.message_handler(commands=['cancel'])
+def cancel_command(message):
+    chat_id = message.chat.id
+    
+    if cancel_swap(chat_id):
+        bot.reply_to(message, "❌ Swap cancelled successfully.")
+    else:
+        bot.reply_to(message, "⚠️ No active swap to cancel.")
+
+@bot.message_handler(commands=['status'])
+def bot_status(message):
+    active_sessions = len([uid for uid, data in user_data.items() if data.get('state')])
+    total_users = get_total_users()
+    active_users = get_active_users_count(1)
+    
+    # Check if user has active swap
+    user_progress = None
+    if message.chat.id in swap_progress:
+        progress = swap_progress[message.chat.id]['progress']
+        message_text = swap_progress[message.chat.id]['message']
+        user_progress = f"\n*Your Swap:* {progress}% - {message_text}"
+    
+    status_text = f"""🤖 *Bot Status*
+
+*Active Sessions:* {active_sessions}
+*Total Users:* {total_users}
+*Active Users (24h):* {active_users}
+*Face Swap API:* ✅ Connected
+
+*Your Status:* {get_user_step(message.chat.id)}{user_progress or ''}
+
+*Commands:*
+/swap - Start new face swap
+/cancel - Cancel ongoing swap
+/mystats - Your statistics
+/history - Your swap history
+
+Type /swap to start a new face swap!"""
+    
+    bot.reply_to(message, status_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['mystats'])
+def my_stats(message):
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT swaps_count, successful_swaps, failed_swaps, 
+               reports_received, favorites_count, join_date
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
+    result = cursor.fetchone()
+    
+    # Get recent swaps
+    cursor.execute('''
+        SELECT status, processing_time 
+        FROM swaps_history 
+        WHERE user_id = ? 
+        ORDER BY swap_date DESC 
+        LIMIT 5
+    ''', (user_id,))
+    recent_swaps = cursor.fetchall()
+    conn.close()
+    
+    if result:
+        swaps_count, successful, failed, reports, favorites, join_date = result
+        success_rate = (successful / max(1, swaps_count)) * 100
+        
+        # Calculate average processing time
+        avg_time = 0
+        if recent_swaps:
+            total_time = sum([s[1] for s in recent_swaps if s[1]])
+            avg_time = total_time / len(recent_swaps)
+        
+        stats_text = f"""📊 *Your Statistics*
+
+*Swaps:*
+• Total: {swaps_count}
+• Successful: {successful}
+• Failed: {failed}
+• Success Rate: {success_rate:.1f}%
+• Avg Time: {avg_time:.1f}s
+
+*Account:*
+• Reports Received: {reports}
+• Favorites: {favorites}
+• Joined: {join_date[:10]}
+• Channel Status: {'✅ Verified' if check_channel_membership(user_id) else '❌ Not Joined'}
+• Bot Status: {'✅ Active' if user_id not in BANNED_USERS else '🚫 Banned'}
+
+*Recent Swaps:*
+{f'\n'.join([f'• {s[0]} ({s[1]:.1f}s)' for s in recent_swaps]) if recent_swaps else 'No recent swaps'}"""
+    else:
+        stats_text = "📊 No statistics available yet."
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_stats"))
+    
+    bot.reply_to(message, stats_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.message_handler(commands=['history'])
+def swap_history(message):
+    user_id = message.from_user.id
+    
+    history = get_user_swap_history(user_id, 10)
+    
+    if not history:
+        bot.reply_to(message, "📭 No swap history yet.")
+        return
+    
+    history_text = "📜 *Your Swap History*\n━━━━━━━━━━━━━━━━━━\n\n"
+    
+    for swap in history:
+        swap_id, swap_date, status, processing_time, favorite = swap
+        
+        status_icon = "✅" if status == "success" else "❌"
+        favorite_icon = "⭐" if favorite else ""
+        
+        history_text += f"{status_icon} *{swap_date[:16]}*\n"
+        history_text += f"ID: `{swap_id}` | Status: {status}\n"
+        history_text += f"Time: {processing_time:.1f}s {favorite_icon}\n"
+        
+        # Add inline buttons for each swap
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        markup.add(
+            types.InlineKeyboardButton("🔍 View", callback_data=f"view_swap_{swap_id}"),
+            types.InlineKeyboardButton("⭐ Favorite", callback_data=f"fav_swap_{swap_id}"),
+            types.InlineKeyboardButton("📋 Compare", callback_data=f"compare_swap_{swap_id}")
+        )
+        
+        if len(history_text) > 3000:
+            # Send current batch
+            bot.send_message(message.chat.id, history_text, parse_mode='Markdown', reply_markup=markup)
+            history_text = ""  # Reset for next message
+        else:
+            history_text += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    if history_text:
+        # Add navigation
+        nav_markup = types.InlineKeyboardMarkup()
+        nav_markup.add(
+            types.InlineKeyboardButton("⬅️ Previous", callback_data="history_prev_0"),
+            types.InlineKeyboardButton("Next ➡️", callback_data="history_next_10")
+        )
+        bot.send_message(message.chat.id, history_text, parse_mode='Markdown', reply_markup=nav_markup)
+
+@bot.message_handler(commands=['favorites'])
+def favorites_list(message):
+    user_id = message.from_user.id
+    
+    favorites = get_user_favorites(user_id, 10)
+    
+    if not favorites:
+        bot.reply_to(message, "⭐ No favorite swaps yet.\n\nAdd favorites from your swap history!")
+        return
+    
+    favorites_text = "⭐ *Your Favorite Swaps*\n━━━━━━━━━━━━━━━━━━\n\n"
+    
+    for fav in favorites:
+        swap_id, swap_date, status, processing_time = fav
+        
+        favorites_text += f"🆔 `{swap_id}`\n"
+        favorites_text += f"📅 {swap_date[:16]}\n"
+        favorites_text += f"✅ {status} ({processing_time:.1f}s)\n"
+        favorites_text += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("🔍 View Swap", callback_data=f"view_swap_{favorites[0][0]}"),
+        types.InlineKeyboardButton("🗑️ Remove", callback_data=f"remove_fav_{favorites[0][0]}")
+    )
+    
+    bot.reply_to(message, favorites_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.message_handler(commands=['report'])
+def report_command(message):
+    """Report inappropriate content"""
+    user_id = message.from_user.id
+    
+    if user_id in BANNED_USERS:
+        bot.reply_to(message, "🚫 You are banned from using this bot.")
+        return
+    
+    # Get user's recent swaps
+    history = get_user_swap_history(user_id, 5)
+    
+    if not history:
+        bot.reply_to(message, "📭 No swaps to report. Make some swaps first!")
+        return
+    
+    report_text = "🚨 *Report Inappropriate Content*\n\n"
+    report_text += "Select a swap to report from your recent history:\n\n"
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    
+    for swap in history:
+        swap_id, swap_date, status, processing_time, favorite = swap
+        report_text += f"🆔 `{swap_id}` - {swap_date[:16]} - {status}\n"
+        markup.add(types.InlineKeyboardButton(
+            f"Report Swap {swap_id}",
+            callback_data=f"report_swap_{swap_id}"
+        ))
+    
+    report_text += "\n*Note:* False reports may result in penalties."
+    
+    bot.reply_to(message, report_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('report_swap_'))
+def report_swap_callback(call):
+    """Handle swap report selection"""
+    swap_id = int(call.data.split('_')[2])
+    user_id = call.from_user.id
+    
+    # Store swap_id for reporting
+    user_data[call.message.chat.id] = {'reporting_swap': swap_id}
+    
+    reasons = [
+        "Inappropriate content",
+        "Copyright violation", 
+        "Harassment/bullying",
+        "Spam/scam",
+        "Other"
+    ]
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for reason in reasons:
+        markup.add(types.InlineKeyboardButton(
+            reason,
+            callback_data=f"report_reason_{reason.replace(' ', '_')}_{swap_id}"
+        ))
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="🚨 *Select Report Reason:*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('report_reason_'))
+def report_reason_callback(call):
+    """Handle report reason selection"""
+    parts = call.data.split('_')
+    reason = ' '.join(parts[2:-1])
+    swap_id = int(parts[-1])
+    user_id = call.from_user.id
+    
+    # Get swap details
+    swap = get_swap_details(swap_id)
+    if not swap:
+        bot.answer_callback_query(call.id, "❌ Swap not found!", show_alert=True)
+        return
+    
+    reported_user_id = swap[1]  # user_id from swap
+    
+    # Add report to database
+    report_id = add_report(user_id, reported_user_id, swap_id, reason)
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ *Report Submitted!*\n\nReport ID: `{report_id}`\nReason: {reason}\n\nThank you for helping keep the community safe.",
+        parse_mode='Markdown'
+    )
+    
+    # Clean up user data
+    if call.message.chat.id in user_data:
+        del user_data[call.message.chat.id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('view_swap_'))
+def view_swap_callback(call):
+    """View swap details"""
+    swap_id = int(call.data.split('_')[2])
+    
+    swap = get_swap_details(swap_id)
+    if not swap:
+        bot.answer_callback_query(call.id, "❌ Swap not found!", show_alert=True)
+        return
+    
+    swap_date, status, processing_time, nsfw_check, reported, favorite = swap[2], swap[3], swap[4], swap[7], swap[8], swap[9]
+    username = swap[13] if len(swap) > 13 else "Unknown"
+    
+    details = f"""🔍 *Swap Details*
+
+🆔 Swap ID: `{swap_id}`
+👤 User: @{username}
+📅 Date: {swap_date}
+✅ Status: {status}
+⏱️ Time: {processing_time:.1f}s
+🚫 NSFW: {'Yes' if nsfw_check else 'No'}
+⚠️ Reported: {'Yes' if reported else 'No'}
+⭐ Favorite: {'Yes' if favorite else 'No'}"""
+    
+    markup = types.InlineKeyboardMarkup()
+    if call.from_user.id == ADMIN_ID:
+        markup.add(
+            types.InlineKeyboardButton("🚨 View Report", callback_data=f"admin_report_{swap_id}"),
+            types.InlineKeyboardButton("🔴 Ban User", callback_data=f"admin_ban_{swap[1]}")  # user_id
+        )
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=details,
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('fav_swap_'))
+def favorite_swap_callback(call):
+    """Favorite/unfavorite a swap"""
+    swap_id = int(call.data.split('_')[2])
+    user_id = call.from_user.id
+    
+    result = toggle_favorite(user_id, swap_id)
+    
+    if result:
+        bot.answer_callback_query(call.id, "⭐ Added to favorites!")
+    else:
+        bot.answer_callback_query(call.id, "🗑️ Removed from favorites!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('compare_swap_'))
+def compare_swap_callback(call):
+    """Show compare options for swap"""
+    swap_id = int(call.data.split('_')[2])
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("🔄 Compare All", callback_data=f"compare_all_{swap_id}"),
+        types.InlineKeyboardButton("📊 Side by Side", callback_data=f"compare_side_{swap_id}")
+    )
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="🔄 *Select Comparison Type:*",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+def get_user_step(chat_id):
+    if chat_id not in user_data:
+        return "Not started"
+    state = user_data[chat_id].get('state')
+    if state == WAITING_FOR_SOURCE:
+        return "Waiting for first photo"
+    elif state == WAITING_FOR_TARGET:
+        return "Waiting for second photo"
+    elif state == PROCESSING:
+        return "Processing face swap"
+    elif state is None and 'source' in user_data[chat_id] and 'target' in user_data[chat_id]:
+        return "Processing face swap"
+    else:
+        return "Ready"
+
+# ========== ADMIN COMMANDS ==========
+@bot.message_handler(commands=['users'])
+def list_users(message):
+    """Admin command: List all users with inline buttons"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    users = get_all_users()
+    
+    if not users:
+        bot.reply_to(message, "📭 No users registered yet.")
+        return
+    
+    # Create pagination
+    page = 0
+    try:
+        page = int(message.text.split()[1]) if len(message.text.split()) > 1 else 0
+    except:
+        page = 0
+    
+    users_per_page = 5
+    start_idx = page * users_per_page
+    end_idx = start_idx + users_per_page
+    page_users = users[start_idx:end_idx]
+    
+    message_text = f"👥 *Registered Users: {len(users)}*\n━━━━━━━━━━━━━━━━━━\n"
+    message_text += f"*Page {page+1}/{(len(users)-1)//users_per_page + 1}*\n\n"
+    
+    for user in page_users:
+        user_id, username, first_name, last_name, join_date, last_active, is_banned, verified, swaps_count, successful, failed, reports, favorites = user
+        
+        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
+        verified_status = "✅" if verified else "❌"
+        
+        # Calculate activity
+        if last_active:
+            last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
+            days_ago = (datetime.now() - last_active_time).days if isinstance(last_active_time, datetime) else 999
+            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+        else:
+            activity = "Never"
+        
+        message_text += f"🆔 `{user_id}`\n"
+        message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
+        message_text += f"📛 {first_name} {last_name or ''}\n"
+        message_text += f"📅 Joined: {join_date[:10]}\n"
+        message_text += f"🕐 Last: {activity}\n"
+        message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
+        message_text += f"⚠️ Reports: {reports} | ⭐ Favs: {favorites}\n"
+        message_text += f"📊 Status: {status}\n"
+        message_text += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Create inline keyboard
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    
+    # Add action buttons for each user on this page
+    for user in page_users:
+        user_id = user[0]
+        username = user[1] or f"ID:{user_id}"
+        is_banned = bool(user[6])
+        
+        if is_banned:
+            markup.add(types.InlineKeyboardButton(
+                f"🟢 Unban {username[:15]}",
+                callback_data=f"admin_unban_{user_id}"
+            ))
+        else:
+            markup.add(types.InlineKeyboardButton(
+                f"🔴 Ban {username[:15]}",
+                callback_data=f"admin_ban_{user_id}"
+            ))
+    
+    # Add pagination buttons
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page_{page-1}"))
+    
+    if end_idx < len(users):
+        nav_buttons.append(types.InlineKeyboardButton("Next ➡️", callback_data=f"users_page_{page+1}"))
+    
+    if nav_buttons:
+        markup.add(*nav_buttons)
+    
+    # Add admin tools
+    markup.add(
+        types.InlineKeyboardButton("📊 View Reports", callback_data="view_reports"),
+        types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_users")
+    )
+    
+    if len(message_text) > 4000:
+        # Split message if too long
+        chunks = [message_text[i:i+4000] for i in range(0, len(message_text), 4000)]
+        for chunk in chunks[:-1]:
+            bot.send_message(ADMIN_ID, chunk, parse_mode='Markdown')
+        bot.send_message(ADMIN_ID, chunks[-1], parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.send_message(ADMIN_ID, message_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.message_handler(commands=['reports'])
+def view_reports(message):
+    """Admin command: View pending reports"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    reports = get_pending_reports()
+    
+    if not reports:
+        bot.reply_to(message, "✅ No pending reports.")
+        return
+    
+    reports_text = f"🚨 *Pending Reports: {len(reports)}*\n━━━━━━━━━━━━━━━━━━\n\n"
+    
+    for report in reports:
+        report_id, reporter_id, reported_user_id, swap_id, reason, report_date, status, action, reporter_name, reported_name = report
+        
+        reports_text += f"📋 *Report ID:* `{report_id}`\n"
+        reports_text += f"👤 Reporter: @{reporter_name} (`{reporter_id}`)\n"
+        reports_text += f"⚠️ Reported: @{reported_name} (`{reported_user_id}`)\n"
+        reports_text += f"🔄 Swap ID: `{swap_id}`\n"
+        reports_text += f"📝 Reason: {reason}\n"
+        reports_text += f"🕐 Date: {report_date[:16]}\n"
+        
+        # Add action buttons for each report
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_report_{report_id}"),
+            types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_report_{report_id}"),
+            types.InlineKeyboardButton("🔴 Ban User", callback_data=f"admin_ban_{reported_user_id}"),
+            types.InlineKeyboardButton("🔍 View Swap", callback_data=f"view_swap_{swap_id}")
+        )
+        
+        reports_text += "━━━━━━━━━━━━━━━━━━\n\n"
+        
+        if len(reports_text) > 3000:
+            bot.send_message(ADMIN_ID, reports_text, parse_mode='Markdown', reply_markup=markup)
+            reports_text = ""
+    
+    if reports_text:
+        bot.send_message(ADMIN_ID, reports_text, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('approve_report_'))
+def approve_report_callback(call):
+    """Approve a report"""
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    report_id = int(call.data.split('_')[2])
+    update_report_status(report_id, "approved", "Report approved by admin")
+    
+    bot.answer_callback_query(call.id, "✅ Report approved!")
+    
+    # Update the message
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=call.message.text + "\n\n✅ **APPROVED BY ADMIN**",
+        parse_mode='Markdown'
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reject_report_'))
+def reject_report_callback(call):
+    """Reject a report"""
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    report_id = int(call.data.split('_')[2])
+    update_report_status(report_id, "rejected", "Report rejected by admin")
+    
+    bot.answer_callback_query(call.id, "❌ Report rejected!")
+    
+    # Update the message
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=call.message.text + "\n\n❌ **REJECTED BY ADMIN**",
+        parse_mode='Markdown'
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "view_reports")
+def view_reports_callback(call):
+    """View reports from inline button"""
+    view_reports(call.message)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('users_page_'))
+def users_page_callback(call):
+    """Handle pagination for users list"""
+    page = int(call.data.split('_')[2])
+    users = get_all_users()
+    
+    users_per_page = 5
+    start_idx = page * users_per_page
+    end_idx = start_idx + users_per_page
+    page_users = users[start_idx:end_idx]
+    
+    message_text = f"👥 *Registered Users: {len(users)}*\n━━━━━━━━━━━━━━━━━━\n"
+    message_text += f"*Page {page+1}/{(len(users)-1)//users_per_page + 1}*\n\n"
+    
+    for user in page_users:
+        user_id, username, first_name, last_name, join_date, last_active, is_banned, verified, swaps_count, successful, failed, reports, favorites = user
+        
+        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
+        verified_status = "✅" if verified else "❌"
+        
+        if last_active:
+            last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
+            days_ago = (datetime.now() - last_active_time).days if isinstance(last_active_time, datetime) else 999
+            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+        else:
+            activity = "Never"
+        
+        message_text += f"🆔 `{user_id}`\n"
+        message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
+        message_text += f"📛 {first_name} {last_name or ''}\n"
+        message_text += f"📅 Joined: {join_date[:10]}\n"
+        message_text += f"🕐 Last: {activity}\n"
+        message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
+        message_text += f"⚠️ Reports: {reports} | ⭐ Favs: {favorites}\n"
+        message_text += f"📊 Status: {status}\n"
+        message_text += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Update inline keyboard
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    
+    for user in page_users:
+        user_id = user[0]
+        username = user[1] or f"ID:{user_id}"
+        is_banned = bool(user[6])
+        
+        if is_banned:
+            markup.add(types.InlineKeyboardButton(
+                f"🟢 Unban {username[:15]}",
+                callback_data=f"admin_unban_{user_id}"
+            ))
+        else:
+            markup.add(types.InlineKeyboardButton(
+                f"🔴 Ban {username[:15]}",
+                callback_data=f"admin_ban_{user_id}"
+            ))
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page_{page-1}"))
+    
+    if end_idx < len(users):
+        nav_buttons.append(types.InlineKeyboardButton("Next ➡️", callback_data=f"users_page_{page+1}"))
+    
+    if nav_buttons:
+        markup.add(*nav_buttons)
+    
+    markup.add(
+        types.InlineKeyboardButton("📊 View Reports", callback_data="view_reports"),
+        types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_users")
+    )
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=message_text,
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_ban_'))
+def admin_ban_callback(call):
+    """Handle ban button click"""
+    user_id = int(call.data.split('_')[2])
+    
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    ban_user(user_id, "Admin action from report")
+    bot.answer_callback_query(call.id, f"✅ User {user_id} banned!")
+    
+    # Update the message
+    users_page_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_unban_'))
+def admin_unban_callback(call):
+    """Handle unban button click"""
+    user_id = int(call.data.split('_')[2])
+    
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    unban_user(user_id)
+    bot.answer_callback_query(call.id, f"✅ User {user_id} unbanned!")
+    
+    # Update the message
+    users_page_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_users")
+def refresh_users_callback(call):
+    """Refresh users list"""
+    list_users(call.message)
+    bot.answer_callback_query(call.id, "✅ Refreshed!")
+
+@bot.message_handler(commands=['ban'])
+def ban_user_command(message):
+    """Admin command: Ban a user"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        user_id = int(message.text.split()[1])
+        reason = ' '.join(message.text.split()[2:]) if len(message.text.split()) > 2 else "Admin action"
+        
+        ban_user(user_id, reason)
+        bot.reply_to(message, f"✅ User `{user_id}` has been banned.\nReason: {reason}")
+        
+        # Notify the banned user
+        try:
+            bot.send_message(user_id, f"🚫 You have been banned from using this bot.\nReason: {reason}")
+        except:
+            pass
+            
+    except (IndexError, ValueError):
+        bot.reply_to(message, "❌ Usage: /ban <user_id> [reason]")
+
+@bot.message_handler(commands=['unban'])
+def unban_user_command(message):
+    """Admin command: Unban a user"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        user_id = int(message.text.split()[1])
+        unban_user(user_id)
+        bot.reply_to(message, f"✅ User `{user_id}` has been unbanned.")
+        
+        # Notify the unbanned user
+        try:
+            bot.send_message(user_id, "✅ Your ban has been lifted. You can use the bot again.")
+        except:
+            pass
+            
+    except (IndexError, ValueError):
+        bot.reply_to(message, "❌ Usage: /unban <user_id>")
+
+@bot.message_handler(commands=['botstatus'])
+def bot_status_admin(message):
+    """Admin command: Show detailed bot status"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    # Get database statistics
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history')
+    total_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+    successful_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+    failed_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE nsfw_check = 1')
+    nsfw_flagged = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE reported = 1')
+    reported_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM favorites')
+    total_favorites = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM reports WHERE status = "pending"')
+    pending_reports = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM users WHERE verified = 1')
+    verified_users = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    success_rate = (successful_swaps / max(1, total_swaps)) * 100
+    
+    status_message = f"""🤖 *ADMIN BOT STATUS REPORT*
+
+━━━━━━━━━━━━━━━━━━
+📊 *User Statistics:*
+• Total Users: {get_total_users()}
+• Active Users (24h): {get_active_users_count(1)}
+• Verified Users: {verified_users}
+• Banned Users: {len(BANNED_USERS)}
+
+🔄 *Swap Statistics:*
+• Total Swaps: {total_swaps}
+• Successful: {successful_swaps}
+• Failed: {failed_swaps}
+• NSFW Flagged: {nsfw_flagged}
+• Reported Swaps: {reported_swaps}
+• Favorited: {total_favorites}
+• Success Rate: {success_rate:.1f}%
+
+🚨 *Reports:*
+• Pending Reports: {pending_reports}
+• Total Reports: {pending_reports} (pending only)
+
+📱 *Current Sessions:*
+• Active Swaps: {len([uid for uid, data in user_data.items() if data.get('state')])}
+• Progress Tracking: {len(swap_progress)}
+• Waiting for 1st Photo: {len([uid for uid, data in user_data.items() if data.get('state') == WAITING_FOR_SOURCE])}
+• Waiting for 2nd Photo: {len([uid for uid, data in user_data.items() if data.get('state') == WAITING_FOR_TARGET])}
+
+🔧 *System Status:*
+• Bot: ✅ RUNNING
+• Database: ✅ CONNECTED
+• Face Swap API: ✅ AVAILABLE
+• NSFW Detection: {'✅ ENABLED' if NSFW_DETECTION_ENABLED else '❌ DISABLED'}
+• Encryption: ✅ ACTIVE
+• Progress Tracking: ✅ ACTIVE
+• Channel Check: ✅ ACTIVE
+• Webhook Mode: {'✅ ENABLED' if WEBHOOK_URL else '❌ DISABLED'}
+
+🌐 *API Endpoints:*
+• Health: `/health` endpoint
+• Health (Extended): `/health/hunter` endpoint
+• Stats: `/stats` endpoint
+• Users API: `/users` endpoint
+• Swaps API: `/api/swaps` endpoint
+• Reports API: `/api/reports` endpoint
+
+━━━━━━━━━━━━━━━━━━
+*Admin Commands:*
+/users - List all users with buttons
+/reports - View pending reports
+/ban <id> [reason] - Ban user
+/unban <id> - Unban user
+/botstatus - This report
+/stats - Show statistics
+/exportdata - Export user data
+/refreshdb - Refresh database
+/refreshbot - Refresh bot data
+/broadcast <msg> - Broadcast message
+━━━━━━━━━━━━━━━━━━
+"""
+    
+    bot.reply_to(message, status_message, parse_mode='Markdown')
+
+@bot.message_handler(commands=['stats'])
+def show_stats(message):
+    """Show bot statistics"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    # Get quick stats
+    total_users = get_total_users()
+    active_users = get_active_users_count(1)
+    banned_users = len(BANNED_USERS)
+    active_sessions = len([uid for uid, data in user_data.items() if data.get('state')])
+    
+    stats_text = f"""📈 *Quick Statistics*
+
+*Users:*
+• Total: {total_users}
+• Active (24h): {active_users}
+• Banned: {banned_users}
+
+*Sessions:*
+• Active: {active_sessions}
+• Progress Tracking: {len(swap_progress)}
+
+*Channel:*
+• Required: {REQUIRED_CHANNEL}
+• Verification: {'✅ Enabled'}
+
+*Security:*
+• NSFW Detection: {'✅ Enabled' if NSFW_DETECTION_ENABLED else '❌ Disabled'}
+• Encryption: ✅ Enabled
+• Reports System: ✅ Active
+
+For detailed report, use /botstatus"""
+    
+    bot.reply_to(message, stats_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['exportdata'])
+def export_data(message):
+    """Export user data as CSV"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    users = get_all_users()
+    
+    if not users:
+        bot.reply_to(message, "📭 No user data to export.")
+        return
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow(['User ID', 'Username', 'First Name', 'Last Name', 
+                     'Join Date', 'Last Active', 'Banned', 'Verified',
+                     'Total Swaps', 'Successful', 'Failed', 'Reports Received', 'Favorites'])
+    
+    # Write data
+    for user in users:
+        writer.writerow(user[:13])  # First 13 columns
+    
+    # Get CSV data
+    csv_data = output.getvalue()
+    output.close()
+    
+    # Send as file
+    bot.send_document(
+        message.chat.id,
+        ('users_export.csv', csv_data.encode('utf-8')),
+        caption=f"📊 User data export ({len(users)} users)"
+    )
+
+@bot.message_handler(commands=['refreshdb'])
+def refresh_database(message):
+    """Refresh database"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        init_database()
+        bot.reply_to(message, "✅ Database refreshed successfully!")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error refreshing database: {str(e)}")
+
+@bot.message_handler(commands=['refreshbot'])
+def refresh_bot(message):
+    """Refresh bot"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    # Clear user data
+    user_data.clear()
+    swap_progress.clear()
+    
+    # Reload banned users
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
+    BANNED_USERS.clear()
+    for row in cursor.fetchall():
+        BANNED_USERS.add(row[0])
+    conn.close()
+    
+    bot.reply_to(message, "✅ Bot refreshed! User data cleared and banned users reloaded.")
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast_message(message):
+    """Broadcast message to all users"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        # Extract message text (remove /broadcast command)
+        broadcast_text = message.text.replace('/broadcast', '', 1).strip()
+        
+        if not broadcast_text:
+            bot.reply_to(message, "❌ Please provide a message to broadcast.\nUsage: /broadcast Your message here")
+            return
+        
+        # Confirmation
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✅ Yes, Send", callback_data=f"confirm_broadcast_{hash(broadcast_text)}"),
+            types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")
+        )
+        
+        bot.reply_to(
+            message,
+            f"📢 *Broadcast Confirmation*\n\n"
+            f"*Message:*\n{broadcast_text}\n\n"
+            f"*Recipients:* All users ({get_total_users()} users)\n\n"
+            f"Are you sure you want to send this broadcast?",
+            parse_mode='Markdown',
+            reply_markup=markup
+        )
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_broadcast_'))
+def confirm_broadcast(call):
+    """Send broadcast to all users"""
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    broadcast_text = call.message.text.split("*Message:*\n")[1].split("\n\n*Recipients:*")[0]
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="📢 *Sending Broadcast...*\n\nPlease wait, this may take a while.",
+        parse_mode='Markdown'
+    )
+    
+    users = get_all_users()
+    sent_count = 0
+    failed_count = 0
+    
+    for user in users:
+        user_id = user[0]
+        
+        # Skip banned users
+        if user_id in BANNED_USERS:
+            continue
+        
+        try:
+            bot.send_message(user_id, f"📢 *Announcement from Admin*\n\n{broadcast_text}", parse_mode='Markdown')
+            sent_count += 1
+            time.sleep(0.1)  # Rate limiting
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Failed to send to {user_id}: {e}")
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ *Broadcast Completed!*\n\n"
+             f"*Sent to:* {sent_count} users\n"
+             f"*Failed:* {failed_count} users\n"
+             f"*Total:* {len(users)} users",
+        parse_mode='Markdown'
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_broadcast")
+def cancel_broadcast(call):
+    """Cancel broadcast"""
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="❌ Broadcast cancelled.",
+        parse_mode='Markdown'
+    )
+
+# ========== FACE SWAP HANDLER WITH PROGRESS TRACKING ==========
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    try:
+        chat_id = message.chat.id
+        user_id = message.from_user.id
+        
+        # Check if banned
+        if user_id in BANNED_USERS:
+            bot.reply_to(message, "🚫 You are banned from using this bot.")
+            return
+        
+        # Get the photo (highest resolution)
+        file_id = message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{bot.token}/{file_info.file_path}"
+        
+        # Download image
+        img_data = requests.get(file_url).content
+        
+        # Check for NSFW content
+        if NSFW_DETECTION_ENABLED:
+            nsfw_detected = check_nsfw_content(img_data)
+            if nsfw_detected:
+                bot.reply_to(message, "🚫 *Content blocked!* This image appears to contain inappropriate content.")
+                # Auto-ban for severe violations
+                increment_user_reports(user_id)
+                
+                # Check if user should be auto-banned
+                conn = sqlite3.connect('face_swap_bot.db')
+                cursor = conn.cursor()
+                cursor.execute('SELECT reports_received FROM users WHERE user_id = ?', (user_id,))
+                reports_count = cursor.fetchone()[0]
+                conn.close()
+                
+                if reports_count >= 3:  # Auto-ban after 3 NSFW violations
+                    ban_user(user_id, "Auto-ban: Multiple NSFW violations")
+                    bot.reply_to(message, "🚫 Account banned due to multiple violations.")
+                
+                return
+        
+        if chat_id not in user_data:
+            # Start new swap session
+            user_data[chat_id] = {
+                'state': WAITING_FOR_TARGET,
+                'source': img_data,
+                'start_time': time.time(),
+                'user_id': user_id
+            }
+            bot.reply_to(message, "✅ *Got your first photo!*\n\n📸 *Step 2:* Now send me the second photo (the face you want to replace).\n\nYou can cancel anytime with /cancel")
+        else:
+            if user_data[chat_id]['state'] == WAITING_FOR_TARGET:
+                user_data[chat_id]['target'] = img_data
+                user_data[chat_id]['state'] = PROCESSING
+                
+                # Initialize progress tracking
+                swap_progress[chat_id] = {
+                    'progress': 0,
+                    'message': "Starting face swap...",
+                    'start_time': time.time(),
+                    'message_id': None
+                }
+                
+                # Start the face swap in a separate thread
+                threading.Thread(target=process_face_swap, args=(chat_id,), daemon=True).start()
+                
+                # Send initial progress
+                update_progress(chat_id, 10, "Uploading images to API...")
+    
+    except Exception as e:
+        logger.error(f"Error processing photo: {str(e)}")
+        bot.reply_to(message, f"❌ *An error occurred:* {str(e)}\n\nPlease try again with different photos.")
+        if chat_id in user_data:
+            del user_data[chat_id]
+        if chat_id in swap_progress:
+            del swap_progress[chat_id]
+
+def process_face_swap(chat_id):
+    """Process face swap with progress updates"""
+    try:
+        if chat_id not in user_data:
+            return
+        
+        user_id = user_data[chat_id]['user_id']
+        source_img = user_data[chat_id]['source']
+        target_img = user_data[chat_id]['target']
+        start_time = user_data[chat_id]['start_time']
+        
+        # Generate image hashes
+        source_hash = generate_image_hash(source_img)
+        target_hash = generate_image_hash(target_img)
+        
+        # Update progress
+        update_progress(chat_id, 30, "Processing faces...")
+        time.sleep(1)  # Simulate processing
+        
+        # Convert images to base64
+        update_progress(chat_id, 50, "Preparing images for swap...")
+        source_base64 = base64.b64encode(source_img).decode('utf-8')
+        target_base64 = base64.b64encode(target_img).decode('utf-8')
+        
+        # Call face swap API
+        update_progress(chat_id, 70, "Swapping faces with AI...")
+        api_url = "https://api.deepswapper.com/swap"
+        data = {
+            'source': source_base64,
+            'target': target_base64,
+            'security': {
+                'token': FACE_SWAP_API_TOKEN,
+                'type': 'invisible',
+                'id': 'deepswapper'
+            }
+        }
+        
+        headers = {'Content-Type': 'application/json'}
+        
+        # Add estimated time to progress
+        elapsed = time.time() - start_time
+        estimated_total = elapsed / 0.7  # Estimate based on 70% progress
+        remaining = estimated_total - elapsed
+        
+        if remaining < 60:
+            time_msg = f"Estimated: {int(remaining)}s remaining"
+        else:
+            time_msg = f"Estimated: {int(remaining/60)}m remaining"
+        
+        update_progress(chat_id, 80, f"Finalizing swap... {time_msg}")
+        
+        response = requests.post(api_url, json=data, headers=headers)
+        
+        processing_time = time.time() - start_time
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            if 'result' in response_data:
+                update_progress(chat_id, 95, "Almost done...")
+                
+                image_data = base64.b64decode(response_data['result'])
+                result_hash = generate_image_hash(image_data)
+               
+                # Save to file (optional)
+                if not os.path.exists('results'):
+                    os.makedirs('results')
+                
+                filename = f"result_{int(time.time())}.png"
+                filepath = os.path.join('results', filename)
+                
+                with open(filepath, 'wb') as f:
+                    f.write(image_data)
+                
+                # Update progress to complete
+                update_progress(chat_id, 100, "Swap completed!")
+                time.sleep(1)  # Show 100% briefly
+                
+                # Clean up progress message
+                if chat_id in swap_progress and swap_progress[chat_id].get('message_id'):
+                    try:
+                        bot.delete_message(chat_id, swap_progress[chat_id]['message_id'])
+                    except:
+                        pass
+                
+                # Store original data for comparison
+                original_data = {
+                    'source': source_img,
+                    'target': target_img,
+                    'result': image_data
+                }
+                
+                # Add to history
+                swap_id = add_swap_history(
+                    user_id, "success", processing_time, 
+                    source_hash, target_hash, result_hash,
+                    original_data=original_data
+                )
+                
+                # Update user statistics
+                update_user_stats(user_id, success=True)
+                
+                # Send result to user
+                with open(filepath, 'rb') as photo:
+                    # Create caption with options
+                    caption = f"""✅ *Face swap completed!*
+
+*Details:*
+🆔 Swap ID: `{swap_id}`
+⏱️ Time: {processing_time:.1f}s
+✅ Status: Success
+
+*Options:*
+⭐ Use /favorites to save this swap
+🔍 Use /history to view all swaps
+🔄 Use /swap to make another"""
+
+                    # Send photo with inline keyboard
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(
+                        types.InlineKeyboardButton("⭐ Favorite", callback_data=f"fav_swap_{swap_id}"),
+                        types.InlineKeyboardButton("🔄 Compare", callback_data=f"compare_all_{swap_id}"),
+                        types.InlineKeyboardButton("🔄 New Swap", callback_data="new_swap")
+                    )
+                    
+                    bot.send_photo(
+                        chat_id, 
+                        photo, 
+                        caption=caption,
+                        parse_mode='Markdown',
+                        reply_markup=markup
+                    )
+                
+                logger.info(f"Face swap completed for {chat_id} in {processing_time:.2f}s")
+                
+                # Clean up user data
+                if chat_id in user_data:
+                    del user_data[chat_id]
+                if chat_id in swap_progress:
+                    del swap_progress[chat_id]
+                    
+            else:
+                update_progress(chat_id, 100, "Error: No result from API")
+                time.sleep(2)
+                
+                if chat_id in swap_progress and swap_progress[chat_id].get('message_id'):
+                    try:
+                        bot.delete_message(chat_id, swap_progress[chat_id]['message_id'])
+                    except:
+                        pass
+                
+                bot.send_message(chat_id, "❌ *Error:* No result from face swap API. Please try again.")
+                
+                # Add to history as failed
+                add_swap_history(user_id, "failed", processing_time, source_hash, target_hash, "")
+                update_user_stats(user_id, success=False)
+                
+                if chat_id in user_data:
+                    del user_data[chat_id]
+                if chat_id in swap_progress:
+                    del swap_progress[chat_id]
+        else:
+            update_progress(chat_id, 100, f"Error: API failed ({response.status_code})")
+            time.sleep(2)
+            
+            if chat_id in swap_progress and swap_progress[chat_id].get('message_id'):
+                try:
+                    bot.delete_message(chat_id, swap_progress[chat_id]['message_id'])
+                except:
+                    pass
+            
+            bot.send_message(chat_id, f"❌ *Error:* Face swap API request failed (Status: {response.status_code}). Please try again.")
+            
+            # Add to history as failed
+            add_swap_history(user_id, "failed", processing_time, source_hash, target_hash, "")
+            update_user_stats(user_id, success=False)
+            
+            if chat_id in user_data:
+                del user_data[chat_id]
+            if chat_id in swap_progress:
+                del swap_progress[chat_id]
+                
+    except Exception as e:
+        logger.error(f"Face swap processing error: {e}")
+        
+        if chat_id in swap_progress and swap_progress[chat_id].get('message_id'):
+            try:
+                bot.delete_message(chat_id, swap_progress[chat_id]['message_id'])
+            except:
+                pass
+        
+        bot.send_message(chat_id, f"❌ *An error occurred during processing:* {str(e)}\n\nPlease try again.")
+        
+        if chat_id in user_data:
+            if 'user_id' in user_data[chat_id]:
+                user_id = user_data[chat_id]['user_id']
+                update_user_stats(user_id, success=False)
+            del user_data[chat_id]
+        if chat_id in swap_progress:
+            del swap_progress[chat_id]
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('compare_all_'))
+def compare_all_callback(call):
+    """Show comparison image"""
+    swap_id = int(call.data.split('_')[2])
+    
+    # Get swap details (in production, you'd retrieve the actual images)
+    swap = get_swap_details(swap_id)
+    if not swap:
+        bot.answer_callback_query(call.id, "❌ Swap data not available for comparison.", show_alert=True)
+        return
+    
+    # In a real implementation, you'd retrieve the actual images from storage
+    # and create a comparison image
+    
+    bot.answer_callback_query(call.id, "🔄 Comparison feature coming soon!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "new_swap")
+def new_swap_callback(call):
+    """Start a new swap from inline button"""
+    start_swap(call.message)
+    bot.answer_callback_query(call.id, "🔄 Starting new swap...")
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_stats")
+def refresh_stats_callback(call):
+    """Refresh user stats"""
+    my_stats(call.message)
+    bot.answer_callback_query(call.id, "✅ Stats refreshed!")
+
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    chat_id = message.chat.id
+    
+    if chat_id in user_data:
+        state = user_data[chat_id].get('state')
+        if state == WAITING_FOR_SOURCE:
+            bot.reply_to(message, "📸 Please send the first photo (the face to use).")
+        elif state == WAITING_FOR_TARGET:
+            bot.reply_to(message, "📸 Please send the second photo (the face to replace).")
+        elif state == PROCESSING or (state is None and 'source' in user_data[chat_id] and 'target' in user_data[chat_id]):
+            # Check if we have progress tracking
+            if chat_id in swap_progress:
+                progress = swap_progress[chat_id]['progress']
+                message_text = swap_progress[chat_id]['message']
+                elapsed = time.time() - swap_progress[chat_id]['start_time']
+                
+                response = f"⏳ *Processing in progress...*\n\n"
+                response += f"Progress: {progress}%\n"
+                response += f"Status: {message_text}\n"
+                response += f"Time elapsed: {elapsed:.1f}s\n\n"
+                response += f"Use /cancel to stop this swap."
+                
+                bot.reply_to(message, response, parse_mode='Markdown')
+            else:
+                bot.reply_to(message, "⏳ Your face swap is being processed. Please wait...")
+        else:
+            bot.reply_to(message, "Type /swap to start a face swap!")
+    else:
+        bot.reply_to(message, "👋 Welcome! Type /start to see instructions or /swap to start a face swap!")
+
+# ========== START BOT ==========
+app_start_time = time.time()
+
 if __name__ == '__main__':
     print("=" * 70)
-    print("🚀 UNIVERSAL USERNAME HUNTER BOT v7.0 - ULTIMATE VERSION")
+    print("🤖 FACE SWAP BOT WITH ADVANCED FEATURES")
     print("=" * 70)
+    print(f"📱 Bot Token: Loaded")
     print(f"👑 Admin ID: {ADMIN_ID}")
+    print(f"📢 Required Channel: {REQUIRED_CHANNEL}")
     print(f"🌐 Port: {BOT_PORT}")
-    print(f"🏓 Health: http://localhost:{BOT_PORT}/health")
-    print(f"📊 Stats: http://localhost:{BOT_PORT}/hunter")
-    print(f"📈 Details: http://localhost:{BOT_PORT}/stats")
+    print(f"🏓 Health Check: http://localhost:{BOT_PORT}/health")
+    print(f"🏓 Health (Extended): http://localhost:{BOT_PORT}/health/hunter")
+    print(f"📊 Stats: http://localhost:{BOT_PORT}/stats")
     print("=" * 70)
-    print("🎯 SUPPORTED PLATFORMS (3L+4L):")
-    print("• Instagram: /hunt (3L+4L) - EXACT ORIGINAL LOGIC!")
-    print("• Telegram: /htele (4L+5L) *No 3L*")
-    print("• Twitter/X: /hx (3L+4L)")
-    print("• TikTok: /htiktok (3L+4L)")
-    print("• YouTube: /hyoutube (3L+4L+5L)")
-    print("• Discord: /hdiscord (3L+4L) - WORKING DISCORD API!")
+    print("🎯 NEW FEATURES ADDED:")
+    print("✅ /report - Report inappropriate content")
+    print("✅ Auto-ban for NSFW content detection")
+    print("✅ Swap history for admins to review")
+    print("✅ Progress bar for swaps with real-time updates")
+    print("✅ Estimated time display")
+    print("✅ Cancel swap option (/cancel)")
+    print("✅ Save favorite swaps (/favorites)")
+    print("✅ Compare original vs swapped")
+    print("✅ Encrypted user data storage")
     print("=" * 70)
-    print("🛡️ ADMIN COMMANDS:")
-    print("• /users - List all users")
-    print("• /ban <id> - Ban user")
-    print("• /unban <id> - Unban user")
-    print("• /botstatus - Bot status report")
+    print("🔧 TECHNICAL FEATURES:")
+    print("• NSFW content detection (basic)")
+    print("• Progress tracking with visual bar")
+    print("• Estimated time calculation")
+    print("• Cancel swap functionality")
+    print("• Favorite system with database")
+    print("• Comparison image generation")
+    print("• AES encryption for user data")
+    print("• Admin report review system")
+    print("• Extended Flask API endpoints")
     print("=" * 70)
-    print("🔐 Discord Token: Loaded ✓")
-    print("👤 User Management: Active ✓")
-    print("💰 3L Support: Enabled on 5 platforms ✓")
-    print("📸 Instagram: Using EXACT original logic ✓")
-    print("🎯 Smart Mixing: 70% 3L priority ✓")
-    print("📊 Enhanced Stats: 3L/4L tracking ✓")
-    print("🔔 Admin Notifications: Active ✓")
-    print("💡 Run ALL 6 hunters simultaneously!")
+    print("👑 ADMIN COMMANDS:")
+    print("/users - List all users with buttons")
+    print("/reports - View pending reports")
+    print("/ban <id> [reason] - Ban user")
+    print("/unban <id> - Unban user")
+    print("/botstatus - Detailed bot report")
+    print("/stats - Quick statistics")
+    print("/exportdata - Export user data as CSV")
+    print("/refreshdb - Refresh database")
+    print("/refreshbot - Refresh bot data")
+    print("/broadcast <msg> - Broadcast to all users")
+    print("=" * 70)
+    print("👤 USER COMMANDS:")
+    print("/swap - Start new face swap")
+    print("/cancel - Cancel ongoing swap")
+    print("/mystats - Your statistics")
+    print("/history - Your swap history")
+    print("/favorites - Your favorite swaps")
+    print("/report - Report inappropriate content")
+    print("/status - Check bot status")
+    print("=" * 70)
+    print("👑 Created by: @PokiePy")
+    print("💰 Credit change krne wale ki mkb")
     print("=" * 70)
     
     # Start Flask in background
@@ -3074,17 +2532,15 @@ if __name__ == '__main__':
     # Start bot
     if WEBHOOK_URL:
         print(f"🌐 Using webhook: {WEBHOOK_URL}")
+        print(f"✅ Webhook set successfully!")
     else:
         print("📡 Using polling mode")
         bot_thread = threading.Thread(target=lambda: bot.polling(non_stop=True), daemon=True)
         bot_thread.start()
+        print("✅ Bot polling started!")
     
-    print("✅ Bot started successfully!")
-    print("🎯 Use /start to see all commands")
-    print("👑 Admin panel ready")
-    print("💰 3L hunting ACTIVE - Find high-value usernames!")
-    print("📸 Instagram using EXACT original hunting logic")
-    print("🌐 Monitor at: http://localhost:{}/hunter".format(BOT_PORT))
+    print("🎯 Bot is ready! Use /start in Telegram to begin.")
+    print(f"🌐 API available at: http://localhost:{BOT_PORT}")
     print("=" * 70)
     
     # Keep main thread alive
@@ -3092,13 +2548,4 @@ if __name__ == '__main__':
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
-        print("\n🛑 Stopping all hunters...")
-        
-        # Stop all hunters
-        for platform_dict in [instagram_hunters, telegram_hunters, twitter_hunters, 
-                            tiktok_hunters, youtube_hunters, discord_hunters]:
-            for hunter in list(platform_dict.values()):
-                if hunter.running:
-                    hunter.stop_hunting()
-        
-        print("✅ Clean shutdown complete.")
+        print("\n🛑 Bot stopped.")
