@@ -129,22 +129,23 @@ def notify_admin_new_user(user_id, username, first_name, last_name):
     try:
         total_users = get_total_users()
         
-        message = f"""👤 *NEW USER REGISTERED*
+        # Fixed message - removed Markdown formatting that was causing parsing error
+        message = f"""👤 NEW USER REGISTERED
 
 ━━━━━━━━━━━━━━━━━━
-🆔 *User ID:* `{user_id}`
-👤 *Username:* @{username or 'N/A'}
-📛 *Name:* {first_name} {last_name or ''}
-🕐 *Time:* {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-📊 *Total Users:* {total_users}
+🆔 User ID: {user_id}
+👤 Username: @{username or 'N/A'}
+📛 Name: {first_name} {last_name or ''}
+🕐 Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+📊 Total Users: {total_users}
 ━━━━━━━━━━━━━━━━━━
 
-*Admin Commands:*
+Admin Commands:
 /ban {user_id} - Ban user
 /users - List all users
 /botstatus - Check bot status"""
         
-        bot.send_message(ADMIN_ID, message, parse_mode='Markdown')
+        bot.send_message(ADMIN_ID, message)
     except Exception as e:
         logger.error(f"Admin notification error: {e}")
 
@@ -161,10 +162,13 @@ def get_active_users_count(days=7):
     """Get active users in last X days"""
     conn = sqlite3.connect('face_swap_bot.db')
     cursor = conn.cursor()
-    cursor.execute('''
+    
+    # FIXED: Proper SQLite parameter binding syntax
+    query = f"""
         SELECT COUNT(*) FROM users 
-        WHERE last_active >= datetime('now', '-? days')
-    ''', (days,))
+        WHERE last_active >= datetime('now', '-{days} days')
+    """
+    cursor.execute(query)
     count = cursor.fetchone()[0]
     conn.close()
     return count
@@ -271,55 +275,75 @@ def home():
             "/": "This page",
             "/health": "Health check",
             "/stats": "Bot statistics",
-            "/users": "User statistics"
+            "/users": "User statistics",
+            "/ping": "Simple ping endpoint",
+            "/ping1": "Another ping endpoint"
         },
         "features": ["Face Swap", "Admin Controls", "Channel Verification", "User Management"]
     })
 
 @app.route('/health')
 def health_check():
-    return jsonify({
-        "status": "healthy",
-        "bot": "running",
-        "database": "connected",
-        "total_users": get_total_users(),
-        "active_users_24h": get_active_users_count(1),
-        "banned_users": len(BANNED_USERS),
-        "timestamp": datetime.now().isoformat()
-    }), 200
+    try:
+        return jsonify({
+            "status": "healthy",
+            "bot": "running",
+            "database": "connected",
+            "total_users": get_total_users(),
+            "active_users_24h": get_active_users_count(1),
+            "banned_users": len(BANNED_USERS),
+            "timestamp": datetime.now().isoformat()
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 @app.route('/stats')
 def stats_api():
-    conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) FROM swaps_history')
-    total_swaps = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
-    successful_swaps = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
-    failed_swaps = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    return jsonify({
-        "total_users": get_total_users(),
-        "active_users_24h": get_active_users_count(1),
-        "banned_users": len(BANNED_USERS),
-        "verified_users": len([u for u in get_all_users() if u[7] == 1]),
-        "swap_statistics": {
-            "total_swaps": total_swaps,
-            "successful_swaps": successful_swaps,
-            "failed_swaps": failed_swaps,
-            "success_rate": (successful_swaps / max(1, total_swaps) * 100)
-        },
-        "active_sessions": len([uid for uid, data in user_data.items() if data.get('state')]),
-        "timestamp": datetime.now().isoformat()
-    })
+    try:
+        conn = sqlite3.connect('face_swap_bot.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history')
+        total_swaps = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+        successful_swaps = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+        failed_swaps = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        success_rate = (successful_swaps / max(1, total_swaps)) * 100 if total_swaps > 0 else 0
+        
+        return jsonify({
+            "total_users": get_total_users(),
+            "active_users_24h": get_active_users_count(1),
+            "banned_users": len(BANNED_USERS),
+            "verified_users": len([u for u in get_all_users() if u[7] == 1]),
+            "swap_statistics": {
+                "total_swaps": total_swaps,
+                "successful_swaps": successful_swaps,
+                "failed_swaps": failed_swaps,
+                "success_rate": round(success_rate, 2)
+            },
+            "active_sessions": len([uid for uid, data in user_data.items() if data.get('state')]),
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Stats API error: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
-app.route('/ping')
+@app.route('/ping')
 def ping():
     return jsonify({"status": "pong", "time": datetime.now().isoformat()})
 
@@ -327,31 +351,38 @@ def ping():
 def ping1():
     return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
 
-
 @app.route('/users')
 def users_api():
-    users = get_all_users()
-    user_list = []
-    
-    for user in users:
-        user_list.append({
-            "user_id": user[0],
-            "username": user[1],
-            "first_name": user[2],
-            "last_name": user[3],
-            "join_date": user[4],
-            "last_active": user[5],
-            "is_banned": bool(user[6]),
-            "is_verified": bool(user[7]),
-            "swaps_count": user[8],
-            "successful_swaps": user[9],
-            "failed_swaps": user[10]
+    try:
+        users = get_all_users()
+        user_list = []
+        
+        for user in users:
+            user_list.append({
+                "user_id": user[0],
+                "username": user[1],
+                "first_name": user[2],
+                "last_name": user[3],
+                "join_date": user[4],
+                "last_active": user[5],
+                "is_banned": bool(user[6]),
+                "is_verified": bool(user[7]),
+                "swaps_count": user[8],
+                "successful_swaps": user[9],
+                "failed_swaps": user[10]
+            })
+        
+        return jsonify({
+            "total_users": len(user_list),
+            "users": user_list
         })
-    
-    return jsonify({
-        "total_users": len(user_list),
-        "users": user_list
-    })
+    except Exception as e:
+        logger.error(f"Users API error: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -562,16 +593,22 @@ def list_users(message):
         
         # Calculate activity
         if last_active:
-            last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
-            days_ago = (datetime.now() - last_active_time).days if isinstance(last_active_time, datetime) else 999
-            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+            try:
+                if isinstance(last_active, str):
+                    last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S')
+                else:
+                    last_active_time = last_active
+                days_ago = (datetime.now() - last_active_time).days
+                activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+            except:
+                activity = "Unknown"
         else:
             activity = "Never"
         
         message_text += f"🆔 `{user_id}`\n"
         message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
         message_text += f"📛 {first_name} {last_name or ''}\n"
-        message_text += f"📅 Joined: {join_date[:10]}\n"
+        message_text += f"📅 Joined: {join_date[:10] if join_date else 'Unknown'}\n"
         message_text += f"🕐 Last: {activity}\n"
         message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
         message_text += f"📊 Status: {status}\n"
@@ -641,16 +678,22 @@ def users_page_callback(call):
         verified_status = "✅" if verified else "❌"
         
         if last_active:
-            last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
-            days_ago = (datetime.now() - last_active_time).days if isinstance(last_active_time, datetime) else 999
-            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+            try:
+                if isinstance(last_active, str):
+                    last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S')
+                else:
+                    last_active_time = last_active
+                days_ago = (datetime.now() - last_active_time).days
+                activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+            except:
+                activity = "Unknown"
         else:
             activity = "Never"
         
         message_text += f"🆔 `{user_id}`\n"
         message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
         message_text += f"📛 {first_name} {last_name or ''}\n"
-        message_text += f"📅 Joined: {join_date[:10]}\n"
+        message_text += f"📅 Joined: {join_date[:10] if join_date else 'Unknown'}\n"
         message_text += f"🕐 Last: {activity}\n"
         message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
         message_text += f"📊 Status: {status}\n"
@@ -780,27 +823,28 @@ def bot_status_admin(message):
         bot.reply_to(message, "❌ This command is for admins only.")
         return
     
-    # Get database statistics
-    conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) FROM swaps_history')
-    total_swaps = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
-    successful_swaps = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
-    failed_swaps = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(*) FROM users WHERE verified = 1')
-    verified_users = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    success_rate = (successful_swaps / max(1, total_swaps)) * 100
-    
-    status_message = f"""🤖 *ADMIN BOT STATUS REPORT*
+    try:
+        # Get database statistics
+        conn = sqlite3.connect('face_swap_bot.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history')
+        total_swaps = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+        successful_swaps = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+        failed_swaps = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM users WHERE verified = 1')
+        verified_users = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        success_rate = (successful_swaps / max(1, total_swaps)) * 100
+        
+        status_message = f"""🤖 *ADMIN BOT STATUS REPORT*
 
 ━━━━━━━━━━━━━━━━━━
 📊 *User Statistics:*
@@ -844,8 +888,10 @@ def bot_status_admin(message):
 /broadcast <msg> - Broadcast message
 ━━━━━━━━━━━━━━━━━━
 """
-    
-    bot.reply_to(message, status_message, parse_mode='Markdown')
+        
+        bot.reply_to(message, status_message, parse_mode='Markdown')
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error generating status report: {str(e)}")
 
 @bot.message_handler(commands=['stats'])
 def show_stats(message):
