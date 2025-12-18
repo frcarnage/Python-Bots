@@ -1,6416 +1,1232 @@
 import os
-import telebot
-import random
-import time
-import string
 import requests
-import json
-import sqlite3
-import threading
-import re
 import base64
-import hashlib
-from datetime import datetime, timedelta
-from telebot.types import (
-    ReplyKeyboardMarkup, 
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    InlineQueryResultArticle,
-    InputTextMessageContent
-)
-from flask import Flask, jsonify, render_template_string, request
-from cryptography.fernet import Fernet
-import uuid
-import psutil
+import telebot
+from telebot import types
+import time
+import sqlite3
+import json
+from datetime import datetime
+from flask import Flask, jsonify, request
+import logging
+import threading
+import csv
+import io
 
-# ==================== CONFIGURATION ====================
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8165377023:AAENQLmAiS2QcZr93R6uYcwXG0gs6AuVduA')
-ADMIN_USER_ID = int(os.environ.get('ADMIN_USER_ID', '7575087826'))
-BOT_USERNAME = "CarnageSwapperBot"
+# ========== CONFIGURATION ==========
+BOT_TOKEN = "8522048948:AAGSCayCSZZF_6z2nHcGjVC7B64E3C9u6F8"
+BOT_PORT = int(os.environ.get('PORT', 6001))
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
-# Generate or load encryption key
-def get_encryption_key():
-    key_file = 'encryption.key'
-    if os.path.exists(key_file):
-        with open(key_file, 'rb') as f:
-            key = f.read()
-    else:
-        key = Fernet.generate_key()
-        with open(key_file, 'wb') as f:
-            f.write(key)
-    return key
+# ========== ADMIN CONFIG ==========
+ADMIN_ID = 7575087826
+BANNED_USERS = set()
 
-ENCRYPTION_KEY = get_encryption_key()
-cipher = Fernet(ENCRYPTION_KEY)
+# ========== CHANNEL VERIFICATION ==========
+REQUIRED_CHANNEL = "@botupdates_2"  # Channel username
 
-# Instagram API Configuration
-DEFAULT_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1447815502327058613/IkpdhIMUlcE34PCNygmnlIU7WBhzmYbvgqCK8KOIDpoHTgMKoJWSRnMKgq41RNh2rmyE"
+# ========== FACE SWAP CONFIG ==========
+FACE_SWAP_API_TOKEN = "0.ufDEMbVMT7mc9_XLsFDSK5CQqdj9Cx_Zjww0DevIvXN5M4fXQr3B9YtPdGkKAHjXBK6UC9rFcEbZbzCfkxxgmdTYV8iPzTby0C03dTKv5V9uXFYfwIVlqwNbIsfOK_rLRHIPB31bQ0ijSTEd-lLbllf3MkEcpkEZFFmmq8HMAuRuliCXFEdCwEB1HoYSJtvJEmDIVsooU3gYdrCm5yOJ8_lZ4DiHCSvy7P8-YxwJKkapJNCMUCFIfJbWDkDzvh8DGPyTRoHbURX8kClfImmPrGcqlfd7kkoNRcudS25IbNf1CGBsh8V96MtEhnTZvOpZfnp5dpV7MfgwOgvx7hUazUaC_wxQE63Aa0uOPuGvJ70BNrmeZIIrY9roD1Koj316L4g2BZ_LLZZF11wcrNNon8UXB0iVudiNCJyDQCxLUmblXUpt4IUvRoiOqXBNtWtLqY0su0ieVB0jjyDf_-zs7wc8WQ_jqp-NsTxgKOgvZYWV6Elz_lf4cNxGHZJ5BdcyLEoRBH3cksvwoncmYOy5Ulco22QT-x2z06xVFBZYZMVulxAcmvQemKfSFKsNaDxwor35p-amn9Vevhyb-GzA_oIoaTmc0fVXSshax2rdFQHQms86fZ_jkTieRpyIuX0mI3C5jLGIiOXzWxNgax9eZeQstYjIh8BIdMiTIUHfyKVTgtoLbK0hjTUTP0xDlCLnOt5qHdwe_iTWedBsswAJWYdtIxw0YUfIU22GMYrJoekOrQErawNlU5yT-LhXquBQY3EBtEup4JMWLendSh68d6HqjN2T3sAfVw0nY5jg7_5LJwj5gqEk57devNN8GGhogJpfdGzYoNGja22IZIuDnPPmWTpGx4VcLOLknSHrzio.tXUN6eooS69z3QtBp-DY1g.d882822dfe05be2b36ed1950554e1bac753abfe304a289adc4289b3f0d517356"
 
-# ======= CHANNEL CONFIGURATION =======
-UPDATES_CHANNEL = "@CarnageUpdates"
-PROOFS_CHANNEL = "@CarnageProof"
-CHANNELS = {
-    "updates": {
-        "id": UPDATES_CHANNEL,
-        "name": "📢 Updates Channel",
-        "description": "Get latest updates, server info, and announcements"
-    },
-    "proofs": {
-        "id": PROOFS_CHANNEL,
-        "name": "✅ Proofs Channel",
-        "description": "See successful swaps and user proofs"
-    }
-}
-
-# ======= MARKETPLACE CHANNELS =======
-MARKETPLACE_CHANNEL_ID = "-1003364960970"  # Marketplace channel for listings
-ADMIN_GROUP_ID = "-1003282021421"  # Admin/middleman group
-
-# Global variables
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
-start_time = time.time()
-bot_running = True
-session_data = {}
-requests_count = 0
-errors_count = 0
-rate_limit_cooldowns = {}
-tutorial_sessions = {}
-referral_cache = {}
-user_states = {}
-marketplace_transactions = {}
-pending_swaps = {}
-verified_mms = {ADMIN_USER_ID}
-swap_sessions = {}
-active_listings = {}
-bidding_sessions = {}
-vouch_requests = {}
-claimer_sessions = {}  # NEW: For username claimer feature
-
-# Database connection pool
-db_lock = threading.Lock()
-
-# ==================== FLASK APP FOR KOYEB ====================
+# ========== FLASK APP ==========
 app = Flask(__name__)
 
-# ==================== HTML TEMPLATES ====================
-HTML_TEMPLATES = {
-    'dashboard': '''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CARNAGE Dashboard - User {user_id}</title>
-        <style>
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            }}
-            
-            body {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                padding: 20px;
-            }}
-            
-            .container {{
-                max-width: 1200px;
-                margin: 0 auto;
-            }}
-            
-            .header {{
-                background: rgba(255, 255, 255, 0.95);
-                backdrop-filter: blur(10px);
-                border-radius: 20px;
-                padding: 30px;
-                margin-bottom: 30px;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-                text-align: center;
-            }}
-            
-            .logo {{
-                font-size: 2.5em;
-                font-weight: 800;
-                background: linear-gradient(45deg, #667eea, #764ba2);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 10px;
-            }}
-            
-            .tagline {{
-                color: #666;
-                font-size: 1.1em;
-                margin-bottom: 20px;
-            }}
-            
-            .user-info {{
-                background: #f8f9fa;
-                border-radius: 15px;
-                padding: 20px;
-                margin-bottom: 20px;
-            }}
-            
-            .stats-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-                gap: 20px;
-                margin-bottom: 30px;
-            }}
-            
-            .stat-card {{
-                background: white;
-                border-radius: 15px;
-                padding: 25px;
-                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-                transition: transform 0.3s, box-shadow 0.3s;
-            }}
-            
-            .stat-card:hover {{
-                transform: translateY(-5px);
-                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-            }}
-            
-            .stat-icon {{
-                font-size: 2em;
-                margin-bottom: 15px;
-            }}
-            
-            .stat-title {{
-                font-size: 0.9em;
-                color: #666;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                margin-bottom: 10px;
-            }}
-            
-            .stat-value {{
-                font-size: 2em;
-                font-weight: 700;
-                color: #333;
-            }}
-            
-            .achievements {{
-                background: white;
-                border-radius: 15px;
-                padding: 25px;
-                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-                margin-bottom: 30px;
-            }}
-            
-            .achievement-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-                gap: 15px;
-                margin-top: 20px;
-            }}
-            
-            .achievement {{
-                background: #f8f9fa;
-                border-radius: 10px;
-                padding: 15px;
-                text-align: center;
-                border: 2px solid transparent;
-            }}
-            
-            .achievement.unlocked {{
-                border-color: #28a745;
-                background: #f0fff4;
-            }}
-            
-            .achievement.emoji {{
-                font-size: 2em;
-                margin-bottom: 10px;
-            }}
-            
-            .recent-swaps {{
-                background: white;
-                border-radius: 15px;
-                padding: 25px;
-                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            }}
-            
-            .swap-item {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 15px;
-                border-bottom: 1px solid #eee;
-            }}
-            
-            .swap-item:last-child {{
-                border-bottom: none;
-            }}
-            
-            .swap-success {{
-                color: #28a745;
-                font-weight: 600;
-            }}
-            
-            .swap-failed {{
-                color: #dc3545;
-                font-weight: 600;
-            }}
-            
-            .footer {{
-                text-align: center;
-                color: white;
-                margin-top: 40px;
-                padding: 20px;
-                font-size: 0.9em;
-                opacity: 0.8;
-            }}
-            
-            .btn-group {{
-                display: flex;
-                gap: 10px;
-                justify-content: center;
-                margin-top: 20px;
-            }}
-            
-            .btn {{
-                padding: 10px 20px;
-                border-radius: 50px;
-                text-decoration: none;
-                font-weight: 600;
-                transition: all 0.3s;
-            }}
-            
-            .btn-primary {{
-                background: linear-gradient(45deg, #667eea, #764ba2);
-                color: white;
-            }}
-            
-            .btn-secondary {{
-                background: #6c757d;
-                color: white;
-            }}
-            
-            .btn:hover {{
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-            }}
-            
-            @media (max-width: 768px) {{
-                .stats-grid {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                .header {{
-                    padding: 20px;
-                }}
-            }}
-        </style>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <div class="logo">CARNAGE SWAPPER</div>
-                <div class="tagline">Advanced Instagram Username Swapping Platform</div>
-                <div class="user-info">
-                    <h3><i class="fas fa-user"></i> User Dashboard</h3>
-                    <p>ID: {user_id} | Status: {status}</p>
-                    <p>Joined: {join_date} | Last Active: {last_active}</p>
-                </div>
-            </div>
-            
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-exchange-alt"></i></div>
-                    <div class="stat-title">Total Swaps</div>
-                    <div class="stat-value">{total_swaps}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-check-circle"></i></div>
-                    <div class="stat-title">Successful Swaps</div>
-                    <div class="stat-value">{successful_swaps}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-percentage"></i></div>
-                    <div class="stat-title">Success Rate</div>
-                    <div class="stat-value">{success_rate}%</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-users"></i></div>
-                    <div class="stat-title">Total Referrals</div>
-                    <div class="stat-value">{total_referrals}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-coins"></i></div>
-                    <div class="stat-title">Free Swaps</div>
-                    <div class="stat-value">{free_swaps}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-icon"><i class="fas fa-trophy"></i></div>
-                    <div class="stat-title">Achievements</div>
-                    <div class="stat-value">{achievements_unlocked}/{achievements_total}</div>
-                </div>
-            </div>
-            
-            <div class="achievements">
-                <h3><i class="fas fa-trophy"></i> Achievements</h3>
-                <div class="achievement-grid">
-                    {achievements_html}
-                </div>
-            </div>
-            
-            <div class="recent-swaps">
-                <h3><i class="fas fa-history"></i> Recent Swaps</h3>
-                {recent_swaps_html}
-            </div>
-            
-            <div class="btn-group">
-                <a href="https://t.me/{bot_username}" class="btn btn-primary" target="_blank">
-                    <i class="fab fa-telegram"></i> Open Bot
-                </a>
-                <a href="/marketplace" class="btn btn-secondary" target="_blank">
-                    <i class="fas fa-store"></i> Marketplace
-                </a>
-            </div>
-            
-            <div class="footer">
-                © 2024 CARNAGE Swapper Bot. All rights reserved.<br>
-                <small>This dashboard updates in real-time. Data is cached for performance.</small>
-            </div>
-        </div>
-        
-        <script>
-            // Auto-refresh every 30 seconds
-            setTimeout(() => {{
-                window.location.reload();
-            }}, 30000);
-        </script>
-    </body>
-    </html>
-    ''',
-    
-    'admin_panel': '''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CARNAGE Admin Panel</title>
-        <style>
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            }}
-            
-            body {{
-                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                color: white;
-                min-height: 100vh;
-                padding: 20px;
-            }}
-            
-            .container {{
-                max-width: 1400px;
-                margin: 0 auto;
-            }}
-            
-            .header {{
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                border-radius: 20px;
-                padding: 30px;
-                margin-bottom: 30px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }}
-            
-            .logo {{
-                font-size: 2.5em;
-                font-weight: 800;
-                background: linear-gradient(45deg, #00dbde, #fc00ff);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 10px;
-            }}
-            
-            .stats-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 20px;
-                margin-bottom: 30px;
-            }}
-            
-            .stat-card {{
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 15px;
-                padding: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                transition: transform 0.3s;
-            }}
-            
-            .stat-card:hover {{
-                transform: translateY(-5px);
-                background: rgba(255, 255, 255, 0.15);
-            }}
-            
-            .stat-title {{
-                font-size: 0.9em;
-                color: #aaa;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                margin-bottom: 10px;
-            }}
-            
-            .stat-value {{
-                font-size: 1.8em;
-                font-weight: 700;
-            }}
-            
-            .tabs {{
-                display: flex;
-                gap: 10px;
-                margin-bottom: 20px;
-                flex-wrap: wrap;
-            }}
-            
-            .tab {{
-                padding: 10px 20px;
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 10px;
-                cursor: pointer;
-                transition: all 0.3s;
-            }}
-            
-            .tab.active {{
-                background: linear-gradient(45deg, #00dbde, #fc00ff);
-            }}
-            
-            .tab:hover {{
-                background: rgba(255, 255, 255, 0.2);
-            }}
-            
-            .content {{
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 20px;
-                padding: 30px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                min-height: 400px;
-            }}
-            
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 20px;
-            }}
-            
-            th, td {{
-                padding: 12px;
-                text-align: left;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-            }}
-            
-            th {{
-                background: rgba(255, 255, 255, 0.1);
-                font-weight: 600;
-            }}
-            
-            tr:hover {{
-                background: rgba(255, 255, 255, 0.05);
-            }}
-            
-            .badge {{
-                padding: 4px 8px;
-                border-radius: 20px;
-                font-size: 0.8em;
-                font-weight: 600;
-            }}
-            
-            .badge-success {{
-                background: rgba(40, 167, 69, 0.2);
-                color: #28a745;
-            }}
-            
-            .badge-warning {{
-                background: rgba(255, 193, 7, 0.2);
-                color: #ffc107;
-            }}
-            
-            .badge-danger {{
-                background: rgba(220, 53, 69, 0.2);
-                color: #dc3545;
-            }}
-            
-            .btn {{
-                padding: 8px 16px;
-                border-radius: 10px;
-                border: none;
-                background: linear-gradient(45deg, #00dbde, #fc00ff);
-                color: white;
-                cursor: pointer;
-                font-weight: 600;
-                transition: all 0.3s;
-                margin: 5px;
-            }}
-            
-            .btn:hover {{
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-            }}
-            
-            .btn-small {{
-                padding: 4px 8px;
-                font-size: 0.8em;
-            }}
-            
-            .search-box {{
-                width: 100%;
-                padding: 15px;
-                border-radius: 10px;
-                background: rgba(255, 255, 255, 0.1);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                color: white;
-                margin-bottom: 20px;
-                font-size: 1em;
-            }}
-            
-            .search-box:focus {{
-                outline: none;
-                border-color: #00dbde;
-            }}
-            
-            @media (max-width: 768px) {{
-                .stats-grid {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                .header {{
-                    padding: 20px;
-                }}
-                
-                table {{
-                    display: block;
-                    overflow-x: auto;
-                }}
-            }}
-        </style>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <div class="logo">CARNAGE ADMIN PANEL</div>
-                <div style="color: #aaa; margin-top: 10px;">
-                    <i class="fas fa-shield-alt"></i> Secure Admin Interface | Logged in as Admin
-                </div>
-            </div>
-            
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-title">Total Users</div>
-                    <div class="stat-value">{total_users}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-title">Active Today</div>
-                    <div class="stat-value">{active_today}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-title">Total Swaps</div>
-                    <div class="stat-value">{total_swaps}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-title">Success Rate</div>
-                    <div class="stat-value">{success_rate}%</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-title">Marketplace Listings</div>
-                    <div class="stat-value">{total_listings}</div>
-                </div>
-                
-                <div class="stat-card">
-                    <div class="stat-title">Pending Transactions</div>
-                    <div class="stat-value">{pending_transactions}</div>
-                </div>
-            </div>
-            
-            <input type="text" class="search-box" placeholder="Search User ID or Username..." id="searchInput" onkeyup="searchTable()">
-            
-            <div class="tabs" id="tabs">
-                <div class="tab active" onclick="showTab('users')">
-                    <i class="fas fa-users"></i> Users
-                </div>
-                <div class="tab" onclick="showTab('swaps')">
-                    <i class="fas fa-exchange-alt"></i> Swaps
-                </div>
-                <div class="tab" onclick="showTab('marketplace')">
-                    <i class="fas fa-store"></i> Marketplace
-                </div>
-                <div class="tab" onclick="showTab('transactions')">
-                    <i class="fas fa-money-bill-wave"></i> Transactions
-                </div>
-                <div class="tab" onclick="showTab('system')">
-                    <i class="fas fa-cog"></i> System
-                </div>
-            </div>
-            
-            <div class="content" id="content">
-                {initial_content}
-            </div>
-        </div>
-        
-        <script>
-            function showTab(tabName) {{
-                // Update active tab
-                document.querySelectorAll('.tab').forEach(tab => {{
-                    tab.classList.remove('active');
-                }});
-                event.target.classList.add('active');
-                
-                // Load content via AJAX
-                fetch(`/admin/tab/${{tabName}}`)
-                    .then(response => response.text())
-                    .then(data => {{
-                        document.getElementById('content').innerHTML = data;
-                    }});
-            }}
-            
-            function searchTable() {{
-                const input = document.getElementById('searchInput').value.toLowerCase();
-                const rows = document.querySelectorAll('tbody tr');
-                
-                rows.forEach(row => {{
-                    const text = row.textContent.toLowerCase();
-                    row.style.display = text.includes(input) ? '' : 'none';
-                }});
-            }}
-            
-            function adminAction(action, userId) {{
-                const reason = prompt('Enter reason (optional):');
-                if (reason !== null) {{
-                    fetch('/admin/action', {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{action: action, userId: userId, reason: reason}})
-                    }})
-                    .then(response => response.json())
-                    .then(data => {{
-                        alert(data.message);
-                        showTab('users');
-                    }});
-                }}
-            }}
-            
-            // Load initial content
-            showTab('users');
-        </script>
-    </body>
-    </html>
-    '''
-}
+# ========== TELEGRAM BOT ==========
+if WEBHOOK_URL:
+    bot = telebot.TeleBot(BOT_TOKEN)
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+else:
+    bot = telebot.TeleBot(BOT_TOKEN)
 
-# ==================== ENCRYPTION FUNCTIONS ====================
-def encrypt_session(session_id):
-    """Encrypt session ID"""
-    try:
-        encrypted = cipher.encrypt(session_id.encode())
-        return encrypted.decode()
-    except:
-        return session_id
+# ========== LOGGING ==========
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-def decrypt_session(encrypted_session):
-    """Decrypt session ID"""
-    try:
-        decrypted = cipher.decrypt(encrypted_session.encode())
-        return decrypted.decode()
-    except:
-        return encrypted_session
-
-# ==================== DATABASE CONNECTION MANAGEMENT ====================
-def get_db_connection():
-    """Get database connection with thread safety"""
-    try:
-        conn = sqlite3.connect('users.db', check_same_thread=False, timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except Exception as e:
-        print(f"❌ Database connection error: {e}")
-        # Try to reconnect
-        time.sleep(1)
-        return get_db_connection()
-
-def execute_query(query, params=(), commit=False):
-    """Execute SQL query with thread safety"""
-    with db_lock:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(query, params)
-            if commit:
-                conn.commit()
-                result = True
-            else:
-                result = cursor.fetchall()
-            return result
-        except Exception as e:
-            print(f"Database error: {e}")
-            if commit:
-                conn.rollback()
-            raise e
-        finally:
-            conn.close()
-
-def execute_one(query, params=()):
-    """Execute SQL query and return single result"""
-    with db_lock:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(query, params)
-            result = cursor.fetchone()
-            return result
-        except Exception as e:
-            print(f"Database error: {e}")
-            return None
-        finally:
-            conn.close()
-
-# ==================== ENHANCED DATABASE SETUP ====================
+# ========== DATABASE SETUP ==========
 def init_database():
-    """Initialize SQLite database with marketplace tables"""
-    try:
-        with db_lock:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Check if tables exist
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
-            tables_exist = cursor.fetchone() is not None
-            
-            if not tables_exist:
-                print("📦 Creating database tables...")
-                
-                # Users table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        username TEXT,
-                        first_name TEXT,
-                        last_name TEXT,
-                        approved INTEGER DEFAULT 0,
-                        approved_until TEXT DEFAULT NULL,
-                        join_date TEXT,
-                        last_active TEXT,
-                        is_banned INTEGER DEFAULT 0,
-                        ban_reason TEXT DEFAULT NULL,
-                        is_admin INTEGER DEFAULT 0,
-                        is_mm INTEGER DEFAULT 0,
-                        referral_code TEXT UNIQUE,
-                        referred_by INTEGER DEFAULT NULL,
-                        total_referrals INTEGER DEFAULT 0,
-                        free_swaps_earned INTEGER DEFAULT 0,
-                        credits INTEGER DEFAULT 100,
-                        tier TEXT DEFAULT 'free',
-                        subscription_until TEXT DEFAULT NULL,
-                        total_swaps INTEGER DEFAULT 0,
-                        successful_swaps INTEGER DEFAULT 0,
-                        join_method TEXT DEFAULT 'direct',
-                        channels_joined INTEGER DEFAULT 0,
-                        main_session_encrypted TEXT DEFAULT NULL,
-                        main_username TEXT DEFAULT NULL,
-                        target_session_encrypted TEXT DEFAULT NULL,
-                        target_username TEXT DEFAULT NULL,
-                        backup_session_encrypted TEXT DEFAULT NULL,
-                        backup_username TEXT DEFAULT NULL,
-                        vouch_score INTEGER DEFAULT 0,
-                        positive_vouches INTEGER DEFAULT 0,
-                        negative_vouches INTEGER DEFAULT 0,
-                        total_transactions INTEGER DEFAULT 0,
-                        claimer_session_encrypted TEXT DEFAULT NULL,
-                        claimer_username TEXT DEFAULT NULL
-                    )
-                ''')
-                
-                # Achievements table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS achievements (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        achievement_id TEXT,
-                        achievement_name TEXT,
-                        achievement_emoji TEXT,
-                        unlocked_at TEXT,
-                        FOREIGN KEY (user_id) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Swap history table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS swap_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        target_username TEXT,
-                        status TEXT,
-                        swap_time TEXT,
-                        error_message TEXT,
-                        FOREIGN KEY (user_id) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Referral tracking
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS referral_tracking (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        referrer_id INTEGER,
-                        referred_id INTEGER,
-                        reward_claimed INTEGER DEFAULT 0,
-                        joined_at TEXT,
-                        FOREIGN KEY (referrer_id) REFERENCES users (user_id),
-                        FOREIGN KEY (referred_id) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Marketplace listings
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS marketplace_listings (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        listing_id TEXT UNIQUE,
-                        seller_id INTEGER,
-                        username TEXT,
-                        price REAL,
-                        currency TEXT DEFAULT 'inr',
-                        listing_type TEXT DEFAULT 'sale',
-                        sale_type TEXT DEFAULT 'fixed',
-                        status TEXT DEFAULT 'active',
-                        description TEXT,
-                        seller_session_encrypted TEXT DEFAULT NULL,
-                        verified_at TEXT DEFAULT NULL,
-                        created_at TEXT,
-                        expires_at TEXT,
-                        views INTEGER DEFAULT 0,
-                        bids INTEGER DEFAULT 0,
-                        highest_bid REAL DEFAULT 0,
-                        highest_bidder INTEGER DEFAULT NULL,
-                        auction_end_time TEXT DEFAULT NULL,
-                        min_increment REAL DEFAULT 100,
-                        current_bid REAL DEFAULT 0,
-                        buy_now_price REAL DEFAULT 0,
-                        FOREIGN KEY (seller_id) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Auction bids
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS auction_bids (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        listing_id TEXT,
-                        bidder_id INTEGER,
-                        bid_amount REAL,
-                        bid_time TEXT,
-                        is_winning INTEGER DEFAULT 0,
-                        FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
-                        FOREIGN KEY (bidder_id) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Marketplace swaps
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS marketplace_swaps (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        swap_id TEXT UNIQUE,
-                        listing_id TEXT,
-                        seller_id INTEGER,
-                        buyer_id INTEGER,
-                        mm_id INTEGER DEFAULT NULL,
-                        amount REAL,
-                        currency TEXT,
-                        status TEXT DEFAULT 'created',
-                        payment_method TEXT,
-                        payment_proof TEXT,
-                        seller_session_encrypted TEXT DEFAULT NULL,
-                        buyer_session_encrypted TEXT DEFAULT NULL,
-                        swap_status TEXT DEFAULT 'pending',
-                        created_at TEXT,
-                        payment_received_at TEXT,
-                        swap_completed_at TEXT,
-                        released_at TEXT,
-                        refunded_at TEXT,
-                        dispute_reason TEXT,
-                        notes TEXT,
-                        vouch_requested INTEGER DEFAULT 0,
-                        vouch_given INTEGER DEFAULT 0,
-                        vouch_type TEXT DEFAULT NULL,
-                        vouch_comment TEXT DEFAULT NULL,
-                        FOREIGN KEY (listing_id) REFERENCES marketplace_listings (listing_id),
-                        FOREIGN KEY (seller_id) REFERENCES users (user_id),
-                        FOREIGN KEY (buyer_id) REFERENCES users (user_id),
-                        FOREIGN KEY (mm_id) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Vouches
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS vouches (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        swap_id TEXT,
-                        user_id INTEGER,
-                        vouch_for INTEGER,
-                        vouch_type TEXT,
-                        comment TEXT,
-                        vouch_time TEXT,
-                        verified INTEGER DEFAULT 0,
-                        FOREIGN KEY (user_id) REFERENCES users (user_id),
-                        FOREIGN KEY (vouch_for) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                # Middlemen
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS middlemen (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER UNIQUE,
-                        verified_by INTEGER,
-                        verified_at TEXT,
-                        status TEXT DEFAULT 'active',
-                        total_swaps INTEGER DEFAULT 0,
-                        successful_swaps INTEGER DEFAULT 0,
-                        rating REAL DEFAULT 0.0,
-                        FOREIGN KEY (user_id) REFERENCES users (user_id),
-                        FOREIGN KEY (verified_by) REFERENCES users (user_id)
-                    )
-                ''')
-                
-                print("✅ All tables created successfully")
-            
-            # Check if admin exists
-            cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,))
-            if not cursor.fetchone():
-                referral_code = generate_referral_code(ADMIN_USER_ID)
-                cursor.execute('''
-                    INSERT INTO users (user_id, username, first_name, last_name, approved, 
-                                      approved_until, join_date, last_active, is_admin, is_mm,
-                                      referral_code, tier, credits, free_swaps_earned)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    ADMIN_USER_ID, "admin", "Admin", "User", 1, 
-                    "9999-12-31 23:59:59",
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    1, 1, referral_code, "vip", 1000000, 100
-                ))
-                
-                cursor.execute('''
-                    INSERT INTO middlemen (user_id, verified_by, verified_at, status)
-                    VALUES (?, ?, ?, ?)
-                ''', (
-                    ADMIN_USER_ID, ADMIN_USER_ID,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "active"
-                ))
-                print("✅ Admin user created")
-            
-            conn.commit()
-            conn.close()
-            
-            print("✅ Database initialized successfully with encryption support")
-            
-    except Exception as e:
-        print(f"❌ Database initialization error: {e}")
-        import traceback
-        traceback.print_exc()
-
-# ==================== AUCTION CHECKER THREAD ====================
-def auction_checker_thread():
-    """Background thread to check auction endings"""
-    while True:
-        try:
-            # Check if tables exist first
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='marketplace_listings'")
-                if not cursor.fetchone():
-                    print("⚠️ marketplace_listings table doesn't exist yet, waiting...")
-                    conn.close()
-                    time.sleep(30)
-                    continue
-                conn.close()
-            except:
-                time.sleep(30)
-                continue
-            
-            # Now check auction endings
-            ended_auctions = execute_query('''
-                SELECT ml.*, u.username as seller_username
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.sale_type = 'auction' AND ml.status = 'active' 
-                AND ml.auction_end_time IS NOT NULL 
-                AND ml.auction_end_time < ?
-            ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-            
-            for auction in ended_auctions:
-                if auction["highest_bidder"]:
-                    # Auction sold - create swap
-                    swap_id = generate_swap_id()
-                    execute_query('''
-                        INSERT INTO marketplace_swaps 
-                        (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        swap_id, auction["listing_id"], auction["seller_id"], auction["highest_bidder"],
-                        auction["current_bid"], auction["currency"], "created",
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    ), commit=True)
-                    
-                    # Update listing status
-                    execute_query(
-                        "UPDATE marketplace_listings SET status = 'reserved' WHERE listing_id = ?",
-                        (auction["listing_id"],), commit=True
-                    )
-                    
-                    # Notify winner
-                    try:
-                        bot.send_message(
-                            auction["highest_bidder"],
-                            f"🎉 *You won the auction!*\n\n"
-                            f"Username: @{auction['username']}\n"
-                            f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
-                            f"Swap ID: `{swap_id}`\n\n"
-                            f"Middleman will contact you shortly.",
-                            parse_mode="Markdown"
-                        )
-                    except:
-                        pass
-                    
-                    # Notify seller
-                    try:
-                        bot.send_message(
-                            auction["seller_id"],
-                            f"💰 *Auction Ended - Sold!*\n\n"
-                            f"Username: @{auction['username']}\n"
-                            f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
-                            f"Buyer: User {auction['highest_bidder']}\n"
-                            f"Swap ID: `{swap_id}`\n\n"
-                            f"Wait for middleman instructions.",
-                            parse_mode="Markdown"
-                        )
-                    except:
-                        pass
-                    
-                    # Notify admin group
-                    try:
-                        bot.send_message(
-                            ADMIN_GROUP_ID,
-                            f"🏆 *AUCTION ENDED - SOLD!*\n\n"
-                            f"Listing: `{auction['listing_id']}`\n"
-                            f"Username: `{auction['username']}`\n"
-                            f"Seller: {auction['seller_username']}\n"
-                            f"Buyer: {auction['highest_bidder']}\n"
-                            f"Price: {auction['current_bid']} {auction['currency']}\n"
-                            f"Swap ID: `{swap_id}`",
-                            parse_mode="Markdown"
-                        )
-                    except:
-                        pass
-                else:
-                    # No bids - mark as expired
-                    execute_query(
-                        "UPDATE marketplace_listings SET status = 'expired' WHERE listing_id = ?",
-                        (auction["listing_id"],), commit=True
-                    )
-                    
-                    # Notify seller
-                    try:
-                        bot.send_message(
-                            auction["seller_id"],
-                            f"⏰ *Auction Ended - No Bids*\n\n"
-                            f"Username: @{auction['username']}\n"
-                            f"No bids were placed on your auction.\n"
-                            f"You can relist it with /sell",
-                            parse_mode="Markdown"
-                        )
-                    except:
-                        pass
-            
-            if ended_auctions:
-                print(f"✅ Processed {len(ended_auctions)} ended auctions")
-            
-            time.sleep(60)  # Check every minute
-            
-        except Exception as e:
-            print(f"❌ Error checking auction endings: {e}")
-            import traceback
-            traceback.print_exc()
-            time.sleep(60)
-
-# ==================== BASIC HELPER FUNCTIONS ====================
-def is_admin(user_id):
-    """Check if user is admin"""
-    result = execute_one("SELECT is_admin FROM users WHERE user_id = ?", (user_id,))
-    return result and result[0] == 1
-
-def is_middleman(user_id):
-    """Check if user is verified middleman"""
-    result = execute_one("SELECT is_mm FROM users WHERE user_id = ?", (user_id,))
-    return result and result[0] == 1
-
-def is_verified_mm(user_id):
-    """Check if user is in verified middlemen table"""
-    result = execute_one("SELECT id FROM middlemen WHERE user_id = ? AND status = 'active'", (user_id,))
-    return result is not None
-
-def generate_referral_code(user_id):
-    """Generate unique referral code"""
-    return f"CARNAGE{user_id}{random.randint(1000, 9999)}"
-
-def generate_listing_id():
-    """Generate unique listing ID"""
-    return f"LIST{int(time.time())}{random.randint(1000, 9999)}"
-
-def generate_swap_id():
-    """Generate unique swap ID"""
-    return f"SWAP{int(time.time())}{random.randint(1000, 9999)}"
-
-def create_reply_menu(buttons, row_width=2, add_back=True):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
-    for i in range(0, len(buttons), row_width):
-        row = [KeyboardButton(text) for text in buttons[i:i + row_width]]
-        markup.add(*row)
-    if add_back:
-        markup.add(KeyboardButton("Back"))
-    return markup
-
-def check_cooldown(chat_id):
-    """Check if user is in cooldown"""
-    if chat_id in rate_limit_cooldowns:
-        cooldown_until = rate_limit_cooldowns[chat_id]
-        if time.time() < cooldown_until:
-            bot.send_message(chat_id, "<b>⚠️ Rate limit reached. Please wait 30 minutes.</b>", parse_mode='HTML')
-            return False
-    return True
-
-def set_cooldown(chat_id):
-    """Set 30-minute cooldown for user"""
-    rate_limit_cooldowns[chat_id] = time.time() + 1800
-
-def get_user_sessions(user_id):
-    """Get user's saved sessions from database"""
-    result = execute_one(
-        "SELECT main_session_encrypted, main_username, target_session_encrypted, target_username, claimer_session_encrypted, claimer_username FROM users WHERE user_id = ?",
-        (user_id,)
-    )
-    if result:
-        main_session = decrypt_session(result[0]) if result[0] else None
-        target_session = decrypt_session(result[2]) if result[2] else None
-        claimer_session = decrypt_session(result[4]) if result[4] else None
-        
-        return {
-            'main': main_session,
-            'main_username': result[1],
-            'target': target_session,
-            'target_username': result[3],
-            'claimer': claimer_session,
-            'claimer_username': result[5]
-        }
-    return {'main': None, 'main_username': None, 'target': None, 'target_username': None, 'claimer': None, 'claimer_username': None}
-
-def save_session_to_db(user_id, session_type, session_id, username):
-    """Save encrypted session to database"""
-    encrypted_session = encrypt_session(session_id)
+    """Initialize SQLite database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
     
-    if session_type == "main":
-        execute_query(
-            "UPDATE users SET main_session_encrypted = ?, main_username = ? WHERE user_id = ?",
-            (encrypted_session, username, user_id),
-            commit=True
+    # Users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP,
+            is_banned INTEGER DEFAULT 0,
+            verified INTEGER DEFAULT 0,
+            swaps_count INTEGER DEFAULT 0,
+            successful_swaps INTEGER DEFAULT 0,
+            failed_swaps INTEGER DEFAULT 0
         )
-    elif session_type == "target":
-        execute_query(
-            "UPDATE users SET target_session_encrypted = ?, target_username = ? WHERE user_id = ?",
-            (encrypted_session, username, user_id),
-            commit=True
-        )
-    elif session_type == "backup":
-        execute_query(
-            "UPDATE users SET backup_session_encrypted = ?, backup_username = ? WHERE user_id = ?",
-            (encrypted_session, username, user_id),
-            commit=True
-        )
-    elif session_type == "marketplace_seller":
-        execute_query(
-            "UPDATE marketplace_listings SET seller_session_encrypted = ?, verified_at = ? WHERE listing_id = ?",
-            (encrypted_session, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username),
-            commit=True
-        )
-    elif session_type == "claimer":  # NEW: Save claimer session
-        execute_query(
-            "UPDATE users SET claimer_session_encrypted = ?, claimer_username = ? WHERE user_id = ?",
-            (encrypted_session, username, user_id),
-            commit=True
-        )
-
-# ==================== INSTAGRAM API FUNCTIONS ====================
-def init_session_data(chat_id):
-    """Initialize session data for user"""
-    if chat_id not in session_data:
-        session_data[chat_id] = {
-            "main": None, "main_username": None, "main_validated_at": None,
-            "target": None, "target_username": None, "target_validated_at": None,
-            "backup": None, "backup_username": None,
-            "swap_webhook": None, "bio": None, "name": None,
-            "swapper_threads": 1,
-            "current_menu": "main",
-            "previous_menu": None,
-            "claimer": None, "claimer_username": None, "claimer_validated_at": None  # NEW: For claimer
-        }
-
-def validate_session(session_id, chat_id=None, user_id=None, purpose="validation"):
-    """Validate Instagram session ID and return username"""
-    print(f"Validating session for purpose: {purpose}")
-    
-    url = "https://i.instagram.com/api/v1/accounts/current_user/"
-    headers = {
-        "User-Agent": "Instagram 194.0.0.36.172 Android (28/9; 440dpi; 1080x1920; Google; Pixel 3; blueline; blueline; en_US)",
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "en-US",
-        "X-IG-App-ID": "567067343352427",
-        "X-IG-Capabilities": "3brTvw==",
-        "X-IG-Connection-Type": "WIFI",
-        "Cookie": f"sessionid={session_id}; csrftoken={''.join(random.choices(string.ascii_letters + string.digits, k=32))}",
-        "Host": "i.instagram.com"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        print(f"Validation response: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            if "user" in data and "username" in data["user"]:
-                username = data["user"]["username"]
-                return {
-                    "success": True,
-                    "username": username,
-                    "user_id": data["user"]["pk"],
-                    "full_name": data["user"]["full_name"],
-                    "is_private": data["user"]["is_private"]
-                }
-            else:
-                return {"success": False, "error": "No username found"}
-        elif response.status_code == 401:
-            return {"success": False, "error": "Invalid or expired session ID"}
-        elif response.status_code == 429:
-            if chat_id:
-                set_cooldown(chat_id)
-            return {"success": False, "error": "Rate limit reached"}
-        else:
-            return {"success": False, "error": f"Unexpected response: {response.status_code}"}
-    except requests.exceptions.Timeout:
-        return {"success": False, "error": "Request timed out"}
-    except Exception as e:
-        return {"success": False, "error": f"Validation error: {str(e)}"}
-
-def generate_random_username():
-    """Generate random username"""
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
-
-def send_discord_webhook(webhook_url, username, action, footer=None):
-    """Send notification to Discord webhook"""
-    if not webhook_url or not webhook_url.startswith("https://"):
-        return False
-    
-    thumbnail_url = "https://cdn.discordapp.com/attachments/1358386363401244865/1367477276568191038/1c7d9a77eb7655559feab2d7c04b64a5.gif"
-    title = "CARNAGE Swapper" if action == "Swapped" else "CARNAGE Failed"
-    description = f"Have A Fun.. {username}"
-    color = 0x00ff00 if action == "Swapped" else 0xff0000
-    
-    embed = {
-        "title": title,
-        "description": description,
-        "color": color,
-        "thumbnail": {"url": thumbnail_url},
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "footer": {"text": f"By : {footer or 'CARNAGE Swapper'}"}
-    }
-    
-    payload = {"embeds": [embed]}
-    try:
-        response = requests.post(webhook_url, json=payload, timeout=5)
-        return response.status_code == 204
-    except:
-        return False
-
-def send_notifications(chat_id, username, action):
-    """Send notifications to Discord and Telegram"""
-    footer = session_data[chat_id]["name"] if chat_id in session_data and session_data[chat_id]["name"] else "CARNAGE Swapper"
-    webhook_url = session_data[chat_id]["swap_webhook"] if chat_id in session_data and session_data[chat_id]["swap_webhook"] else DEFAULT_WEBHOOK_URL
-    success = send_discord_webhook(webhook_url, username, action, footer)
-    if not success and webhook_url != DEFAULT_WEBHOOK_URL:
-        send_discord_webhook(DEFAULT_WEBHOOK_URL, username, action, footer)
-    
-    # Send to Telegram proofs channel
-    try:
-        bot.send_message(
-            CHANNELS['proofs']['id'],
-            f"✅ *{action.upper()} SWAP*\n\n👤 Username: `{username}`\n🕒 Time: {datetime.now().strftime('%H:%M:%S')}",
-            parse_mode="Markdown"
-        )
-    except:
-        pass
-
-def change_username_account1(chat_id, session_id, csrf_token, random_username):
-    """Change username for target account (to random username)"""
-    global requests_count, errors_count
-    
-    url = 'https://www.instagram.com/api/v1/web/accounts/edit/'
-    data = {
-        'first_name': session_data[chat_id].get('name', 'Default Name'),
-        'email': 'default@example.com',
-        'username': random_username,
-        'phone_number': '+0000000000',
-        'biography': session_data[chat_id].get('bio', 'Default Bio'),
-        'external_url': 'https://example.com',
-        'chaining_enabled': 'on'
-    }
-    
-    headers = {
-        'accept': '*/*',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'cookie': f'mid=YQvmcwAEAAFVrBezgjwUhwEQuv3c; csrftoken={csrf_token}; sessionid={session_id};',
-        'origin': 'https://www.instagram.com',
-        'referer': 'https://www.instagram.com/accounts/edit/',
-        'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'x-asbd-id': '129477',
-        'x-csrftoken': csrf_token,
-        'x-ig-app-id': '936619743392459',
-        'x-ig-www-claim': 'hmac.AR0EWvjix_XsqAIjAt7fjL3qLwQKCRTB8UMXTGL5j7pkgSqj',
-        'x-instagram-ajax': '1014730915',
-        'x-requested-with': 'XMLHttpRequest'
-    }
-    
-    print(f"Changing username to {random_username} for session {session_id}")
-    try:
-        response = requests.post(url, headers=headers, data=data, timeout=10)
-        requests_count += 1
-        
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                if data.get("status") == "ok":
-                    return random_username
-                else:
-                    error_message = data.get("message", "Unknown error")
-                    return None
-            except json.JSONDecodeError:
-                return None
-        elif response.status_code == 429:
-            errors_count += 1
-            set_cooldown(chat_id)
-            return None
-        elif response.status_code == 400:
-            errors_count += 1
-            return None
-        else:
-            errors_count += 1
-            return None
-    except Exception as e:
-        errors_count += 1
-        return None
-
-def change_username_account2(chat_id, session_id, csrf_token, target_username):
-    """Change username for main account (to target username)"""
-    global requests_count, errors_count
-    
-    if not check_cooldown(chat_id):
-        return False
-    
-    url = 'https://www.instagram.com/api/v1/web/accounts/edit/'
-    data = {
-        'first_name': session_data[chat_id].get('name', 'Default Name'),
-        'email': 'default@example.com',
-        'username': target_username.lstrip('@'),
-        'phone_number': '+0000000000',
-        'biography': session_data[chat_id].get('bio', 'Default Bio'),
-        'external_url': 'https://example.com',
-        'chaining_enabled': 'on'
-    }
-    
-    headers = {
-        'accept': '*/*',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'cookie': f'mid=YQvmcwAEAAFVrBezgjwUhwEQuv3c; csrftoken={csrf_token}; sessionid={session_id};',
-        'origin': 'https://www.instagram.com',
-        'referer': 'https://www.instagram.com/accounts/edit/',
-        'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'x-asbd-id': '129477',
-        'x-csrftoken': csrf_token,
-        'x-ig-app-id': '936619743392459',
-        'x-ig-www-claim': 'hmac.AR0EWvjix_XsqAIjAt7fjL3qLwQKCRTB8UMXTGL5j7pkgSqj',
-        'x-instagram-ajax': '1014730915',
-        'x-requested-with': 'XMLHttpRequest'
-    }
-    
-    print(f"Changing username to {target_username} for session {session_id}")
-    try:
-        response = requests.post(url, headers=headers, data=data, timeout=10)
-        requests_count += 1
-        
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                if data.get("status") == "ok":
-                    return True
-                else:
-                    return False
-            except json.JSONDecodeError:
-                return False
-        elif response.status_code == 429:
-            errors_count += 1
-            set_cooldown(chat_id)
-            return False
-        elif response.status_code == 400:
-            errors_count += 1
-            return False
-        else:
-            errors_count += 1
-            return False
-    except Exception as e:
-        errors_count += 1
-        return False
-
-# ==================== DATABASE FUNCTIONS ====================
-def add_user(user_id, username, first_name, last_name, referral_code="direct"):
-    """Add new user to database"""
-    existing_user = execute_one("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    if existing_user:
-        return
-    
-    user_referral_code = generate_referral_code(user_id)
-    execute_query('''
-        INSERT INTO users (user_id, username, first_name, last_name, join_date, last_active, 
-                          referral_code, join_method, credits)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, username, first_name, last_name, 
-          datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-          user_referral_code, 'direct', 100), commit=True)
-    
-    if referral_code and referral_code != "direct":
-        process_referral(user_id, referral_code)
-    
-    # Notify admin about new user
-    try:
-        bot.send_message(
-            ADMIN_USER_ID,
-            f"🆕 *New User Joined*\n\n"
-            f"ID: `{user_id}`\n"
-            f"Name: {first_name} {last_name}\n"
-            f"Username: @{username or 'N/A'}\n"
-            f"Via: {'Referral' if referral_code != 'direct' else 'Direct'}\n\n"
-            f"Total Users: {get_total_users()}",
-            parse_mode="Markdown"
-        )
-    except:
-        pass
-
-def update_user_active(user_id):
-    """Update user's last active time"""
-    execute_query("UPDATE users SET last_active = ? WHERE user_id = ?", 
-                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id), commit=True)
-
-def get_user_status(user_id):
-    """Get user approval status"""
-    result = execute_one("SELECT approved, is_banned FROM users WHERE user_id = ?", (user_id,))
-    
-    if result:
-        approved = result[0]
-        is_banned = result[1]
-        
-        if is_banned:
-            return "banned"
-        
-        if approved == 1:
-            return "approved"
-    
-    return "pending"
-
-def is_user_approved(user_id):
-    """Check if user is approved"""
-    status = get_user_status(user_id)
-    return status == "approved"
-
-def approve_user(user_id, duration_days=None):
-    """Approve user access"""
-    if duration_days:
-        if duration_days == "permanent":
-            approved_until = "9999-12-31 23:59:59"
-        else:
-            approved_until = (datetime.now() + timedelta(days=int(duration_days))).strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        approved_until = "9999-12-31 23:59:59"
-    
-    execute_query("UPDATE users SET approved = 1, approved_until = ? WHERE user_id = ?", 
-                  (approved_until, user_id), commit=True)
-
-def get_total_users():
-    """Get total user count"""
-    result = execute_one("SELECT COUNT(*) FROM users")
-    return result[0] if result else 0
-
-def log_swap(user_id, target_username, status, error_message=None):
-    """Log swap attempt to history"""
-    execute_query('''
-        INSERT INTO swap_history (user_id, target_username, status, swap_time, error_message)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, target_username, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), error_message), commit=True)
-    
-    execute_query("UPDATE users SET total_swaps = total_swaps + 1 WHERE user_id = ?", (user_id,), commit=True)
-    if status == "success":
-        execute_query("UPDATE users SET successful_swaps = successful_swaps + 1 WHERE user_id = ?", (user_id,), commit=True)
-
-def get_user_detailed_stats(user_id):
-    """Get detailed user statistics"""
-    user_data = execute_one('''
-        SELECT username, total_swaps, successful_swaps, total_referrals, free_swaps_earned,
-               join_date, last_active, tier, credits, vouch_score, positive_vouches,
-               negative_vouches, total_transactions
-        FROM users WHERE user_id = ?
-    ''', (user_id,))
-    
-    if not user_data:
-        return None
-    
-    (username, total_swaps, successful_swaps, total_referrals, free_swaps, 
-     join_date, last_active, tier, credits, vouch_score, positive_vouches,
-     negative_vouches, total_transactions) = user_data
-    
-    success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
-    
-    recent_swaps = execute_query('''
-        SELECT target_username, status, swap_time 
-        FROM swap_history 
-        WHERE user_id = ? 
-        ORDER BY swap_time DESC 
-        LIMIT 5
-    ''', (user_id,))
-    
-    achievements = execute_query('''
-        SELECT achievement_id, achievement_name, achievement_emoji, unlocked_at 
-        FROM achievements WHERE user_id = ? ORDER BY unlocked_at DESC
-    ''', (user_id,))
-    
-    achievements_unlocked = len(achievements)
-    
-    return {
-        "username": username or "User",
-        "bot_username": BOT_USERNAME,
-        "user_id": user_id,
-        "join_date": join_date,
-        "last_active": last_active,
-        "tier": tier,
-        "credits": credits,
-        "vouch_score": vouch_score,
-        "positive_vouches": positive_vouches,
-        "negative_vouches": negative_vouches,
-        "total_transactions": total_transactions,
-        "total_swaps": total_swaps,
-        "successful_swaps": successful_swaps,
-        "success_rate": success_rate,
-        "total_referrals": total_referrals,
-        "free_swaps": free_swaps,
-        "achievements_unlocked": achievements_unlocked,
-        "recent_swaps": [
-            {"target": s[0], "status": s[1], "time": s[2]} for s in recent_swaps
-        ],
-        "achievements": achievements
-    }
-
-# ==================== REFERRAL SYSTEM ====================
-def process_referral(user_id, referral_code):
-    """Process referral when new user joins"""
-    if not referral_code or referral_code == "direct":
-        return
-    
-    result = execute_one("SELECT user_id FROM users WHERE referral_code = ?", (referral_code,))
-    
-    if result:
-        referrer_id = result[0]
-        
-        execute_query("UPDATE users SET referred_by = ?, join_method = 'referral' WHERE user_id = ?", 
-                     (referrer_id, user_id), commit=True)
-        
-        # Give 2 free swaps to referrer
-        execute_query('''
-            UPDATE users 
-            SET total_referrals = total_referrals + 1,
-                free_swaps_earned = free_swaps_earned + 2
-            WHERE user_id = ?
-        ''', (referrer_id,), commit=True)
-        
-        # Auto-approve referred user
-        execute_query("UPDATE users SET approved = 1, approved_until = '9999-12-31 23:59:59' WHERE user_id = ?", 
-                     (user_id,), commit=True)
-        
-        # Log referral
-        execute_query('''
-            INSERT INTO referral_tracking (referrer_id, referred_id, joined_at)
-            VALUES (?, ?, ?)
-        ''', (referrer_id, user_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")), commit=True)
-        
-        try:
-            bot.send_message(
-                referrer_id,
-                f"🎉 *New Referral!*\n\n"
-                f"Someone joined using your referral link!\n"
-                f"• You earned: **2 FREE swaps** 🆓\n"
-                f"• Total referrals: {get_user_referrals_count(referrer_id)}\n"
-                f"• Total free swaps earned: {get_user_free_swaps(referrer_id)}\n\n"
-                f"Keep sharing your link for more rewards!",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-
-def get_user_referrals_count(user_id):
-    """Get count of user's referrals"""
-    result = execute_one("SELECT COUNT(*) FROM referral_tracking WHERE referrer_id = ?", (user_id,))
-    return result[0] if result else 0
-
-def get_user_free_swaps(user_id):
-    """Get user's free swaps count"""
-    result = execute_one("SELECT free_swaps_earned FROM users WHERE user_id = ?", (user_id,))
-    return result[0] if result else 0
-
-# ==================== CHANNEL VERIFICATION SYSTEM ====================
-def check_channel_membership(user_id, channel_username):
-    """Check if user is member of a channel"""
-    try:
-        chat_member = bot.get_chat_member(channel_username, user_id)
-        return chat_member.status in ['member', 'administrator', 'creator', 'restricted']
-    except Exception as e:
-        print(f"Error checking channel membership for {channel_username}: {e}")
-        return False
-
-def check_all_channels(user_id):
-    """Check if user has joined all required channels"""
-    results = {}
-    for channel_type, channel_info in CHANNELS.items():
-        results[channel_type] = check_channel_membership(user_id, channel_info['id'])
-    return results
-
-def has_joined_all_channels(user_id):
-    """Check if user has joined all required channels"""
-    results = check_all_channels(user_id)
-    return all(results.values())
-
-def create_channel_buttons():
-    """Create inline buttons for channel joining"""
-    markup = InlineKeyboardMarkup(row_width=1)
-    
-    for channel_type, channel_info in CHANNELS.items():
-        markup.add(InlineKeyboardButton(
-            f"🔗 Join {channel_info['name']}",
-            url=f"https://t.me/{channel_info['id'].replace('@', '')}"
-        ))
-    
-    markup.add(InlineKeyboardButton(
-        "✅ I've Joined All Channels",
-        callback_data="check_channels"
-    ))
-    
-    return markup
-
-def send_welcome_with_channels(user_id, first_name):
-    """Send welcome message with channel requirements"""
-    welcome_message = f"""
-🤖 *Welcome to CARNAGE Swapper Bot* {first_name}! 🎉
-
-*⚠️ IMPORTANT: Before using the bot, you MUST join our official channels:*
-
-"""
-    
-    for channel_type, channel_info in CHANNELS.items():
-        welcome_message += f"\n📌 *{channel_info['name']}*"
-        welcome_message += f"\n{channel_info['description']}"
-        welcome_message += f"\nJoin: {channel_info['id']}\n"
-    
-    welcome_message += f"""
-*Why join these channels?*
-• {CHANNELS['updates']['name']}: Get latest updates, server status, and news
-• {CHANNELS['proofs']['name']}: See successful swaps as proof and user testimonials
-
-*After joining both channels, click the button below to verify.*
-"""
-    
-    bot.send_message(
-        user_id,
-        welcome_message,
-        parse_mode="Markdown",
-        reply_markup=create_channel_buttons()
-    )
-
-# ==================== MENU FUNCTIONS ====================
-def show_main_menu(chat_id):
-    """Show main menu"""
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "⏳ *Your account is pending approval.*", parse_mode="Markdown")
-        return
-    
-    buttons = [
-        "📱 Main Session", "🎯 Target Session",
-        "🔄 Swapper", "⚙️ Settings",
-        "📊 Dashboard", "🎁 Referral",
-        "🏆 Achievements", "📈 Stats",
-        "🛒 Marketplace", "🚀 Username Claimer"  # NEW: Added Username Claimer
-    ]
-    markup = create_reply_menu(buttons, row_width=2, add_back=False)
-    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*", parse_mode='Markdown', reply_markup=markup)
-
-def show_swapper_menu(chat_id):
-    """Show swapper menu"""
-    if not is_user_approved(chat_id):
-        return
-    
-    buttons = ["Run Main Swap", "BackUp Mode", "Threads Swap", "Back"]
-    markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>🔄 CARNAGE Swapper - Select Option</b>", parse_mode='HTML', reply_markup=markup)
-
-def show_settings_menu(chat_id):
-    """Show settings menu"""
-    if not is_user_approved(chat_id):
-        return
-    
-    buttons = ["Bio", "Name", "Webhook", "Check Block", "Close Sessions", "Back"]
-    markup = create_reply_menu(buttons, row_width=2)
-    bot.send_message(chat_id, "<b>⚙️ CARNAGE Settings - Select Option</b>", parse_mode='HTML', reply_markup=markup)
-
-# ==================== NEW: USERNAME CLAIMER FEATURE ====================
-def show_username_claimer_menu(chat_id):
-    """Show username claimer menu"""
-    if not is_user_approved(chat_id):
-        return
-    
-    # Check if user has claimer session saved
-    user_sessions = get_user_sessions(chat_id)
-    has_claimer = user_sessions['claimer'] is not None
-    
-    if has_claimer:
-        buttons = ["🔍 Check & Claim Username", "🔄 Change Claimer Session", "📊 Claimer Info", "Back"]
-    else:
-        buttons = ["✅ Setup Claimer Session", "Back"]
-    
-    markup = create_reply_menu(buttons, row_width=2)
-    
-    if has_claimer:
-        message = f"""
-🚀 *Username Claimer*
-
-✅ Claimer Session: @{user_sessions['claimer_username']}
-
-*Features:*
-• Check username availability
-• Claim available usernames instantly
-• One-session operation
-• No need for target account
-
-Select an option:
-"""
-    else:
-        message = """
-🚀 *Username Claimer*
-
-*Claim available Instagram usernames with just ONE session!*
-
-*How it works:*
-1. Setup your claimer session (your Instagram account)
-2. Check if a username is available
-3. If available, claim it instantly!
-
-*Benefits:*
-• No need for target account
-• Simple one-step process
-• Instant claiming of available names
-
-Select 'Setup Claimer Session' to begin!
-"""
-    
-    bot.send_message(chat_id, message, parse_mode="Markdown", reply_markup=markup)
-
-def setup_claimer_session(chat_id):
-    """Setup claimer session"""
-    session_data[chat_id]["current_menu"] = "claimer_session_input"
-    session_data[chat_id]["previous_menu"] = "claimer"
-    bot.send_message(
-        chat_id,
-        "🚀 *Username Claimer Setup*\n\n"
-        "Send your Instagram session ID (the account that will claim usernames):\n\n"
-        "*Note:* This account's current username will be changed to the new username.\n"
-        "Make sure you're okay with changing this account's username!",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler_by_chat_id(chat_id, save_claimer_session)
-
-def save_claimer_session(message):
-    """Save claimer session"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    session_id = message.text.strip()
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "❌ Your account is not approved yet.", parse_mode="Markdown")
-        show_username_claimer_menu(chat_id)
-        return
-    
-    validation = validate_session(session_id, chat_id)
-    if validation["success"]:
-        username = validation["username"]
-        session_data[chat_id]["claimer"] = session_id
-        session_data[chat_id]["claimer_username"] = f"@{username}"
-        session_data[chat_id]["claimer_validated_at"] = time.time()
-        save_session_to_db(chat_id, "claimer", session_id, username)
-        bot.send_message(
-            chat_id,
-            f"✅ *Claimer Session Logged @{username}*\n\n"
-            f"This account will be used to claim available usernames.\n"
-            f"When you claim a username, this account's username will change to the new one.",
-            parse_mode="Markdown"
-        )
-    else:
-        bot.send_message(chat_id, f"❌ {validation['error']}", parse_mode="Markdown")
-    
-    show_username_claimer_menu(chat_id)
-
-def check_username_availability(session_id, username):
-    """Check if a username is available on Instagram"""
-    url = "https://www.instagram.com/api/v1/web/accounts/web_create_ajax/attempt/"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": "https://www.instagram.com",
-        "Referer": "https://www.instagram.com/accounts/signup/",
-        "Cookie": f"sessionid={session_id}",
-        "X-Instagram-AJAX": "1008613962",
-        "X-CSRFToken": "".join(random.choices(string.ascii_letters + string.digits, k=32)),
-        "X-IG-App-ID": "936619743392459"
-    }
-    
-    data = {
-        "email": f"test{random.randint(100000, 999999)}@gmail.com",
-        "username": username,
-        "first_name": "Test",
-        "opt_into_one_tap": "false"
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, data=data, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            if "errors" in data and "username" in data["errors"]:
-                # Username is taken
-                error_msg = data["errors"]["username"]
-                if isinstance(error_msg, list):
-                    error_msg = error_msg[0]
-                return {
-                    "available": False,
-                    "message": error_msg
-                }
-            else:
-                # Username might be available
-                return {
-                    "available": True,
-                    "message": "Username appears to be available"
-                }
-        else:
-            return {
-                "available": None,
-                "message": f"API Error: {response.status_code}"
-            }
-            
-    except Exception as e:
-        return {
-            "available": None,
-            "message": f"Request failed: {str(e)}"
-        }
-
-def validate_username_format(username):
-    """Validate Instagram username format"""
-    # Remove @ if present
-    username = username.replace('@', '').strip()
-    
-    # Check length
-    if len(username) < 1 or len(username) > 30:
-        return False, "Username must be 1-30 characters"
-    
-    # Check characters (Instagram allows letters, numbers, periods, underscores)
-    if not re.match(r'^[a-zA-Z0-9._]+$', username):
-        return False, "Only letters, numbers, periods (.) and underscores (_) allowed"
-    
-    # Check if starts/ends with period or underscore
-    if username.startswith('.') or username.startswith('_'):
-        return False, "Cannot start with . or _"
-    if username.endswith('.') or username.endswith('_'):
-        return False, "Cannot end with . or _"
-    
-    # Check for consecutive special characters
-    if '..' in username or '__' in username or '._' in username or '_.' in username:
-        return False, "Cannot have consecutive . or _"
-    
-    return True, username
-
-def get_username_type(username):
-    """Categorize username type"""
-    username = username.lower()
-    
-    # Check for numbers only
-    if username.isdigit():
-        return "🔢 Numbers Only"
-    
-    # Check length categories
-    if len(username) == 1:
-        return "1️⃣ 1 Letter (Ultra Rare)"
-    elif len(username) == 2:
-        return "2️⃣ 2 Letters (Very Rare)"
-    elif len(username) == 3:
-        return "3️⃣ 3 Letters (Rare)"
-    elif len(username) == 4:
-        return "4️⃣ 4 Letters (Semi-Rare)"
-    elif len(username) <= 6:
-        return "🔤 Short (5-6 chars)"
-    elif len(username) <= 8:
-        return "📝 Medium (7-8 chars)"
-    else:
-        return "📏 Long (9+ chars)"
-
-def start_username_check(chat_id):
-    """Start username check process"""
-    # Get user's claimer session
-    user_sessions = get_user_sessions(chat_id)
-    
-    if not user_sessions['claimer']:
-        bot.send_message(
-            chat_id,
-            "❌ *No Claimer Session Found!*\n\n"
-            "Please setup your claimer session first.\n"
-            "Use '✅ Setup Claimer Session' in the Username Claimer menu.",
-            parse_mode="Markdown"
-        )
-        show_username_claimer_menu(chat_id)
-        return
-    
-    bot.send_message(
-        chat_id,
-        "🎯 *Username Check*\n\n"
-        "Send the username you want to check (without @):\n\n"
-        "Example: `carnage` or `og.name`\n\n"
-        "*Note:* I'll check if this username is available on Instagram.",
-        parse_mode="Markdown"
-    )
-    
-    # Store state for username checking
-    claimer_sessions[chat_id] = {
-        "step": "awaiting_username",
-        "session": user_sessions['claimer'],
-        "current_username": user_sessions['claimer_username']
-    }
-    
-    bot.register_next_step_handler_by_chat_id(chat_id, process_username_check)
-
-def process_username_check(message):
-    """Process username check"""
-    chat_id = message.chat.id
-    target_username = message.text.strip()
-    
-    # Check if we have claimer session
-    if chat_id not in claimer_sessions:
-        bot.send_message(chat_id, "❌ Session expired. Please start over.")
-        show_username_claimer_menu(chat_id)
-        return
-    
-    # Validate username format
-    is_valid, result = validate_username_format(target_username)
-    if not is_valid:
-        bot.send_message(chat_id, f"❌ {result}")
-        show_username_claimer_menu(chat_id)
-        return
-    
-    target_username = result
-    claimer_data = claimer_sessions[chat_id]
-    
-    # Show checking animation
-    check_msg = bot.send_message(chat_id, "🔍 *Checking username availability...*", parse_mode="Markdown")
-    
-    # Check availability
-    result = check_username_availability(claimer_data["session"], target_username)
-    
-    # Get username type
-    username_type = get_username_type(target_username)
-    
-    # Update claimer data
-    claimer_data["target_username"] = target_username
-    claimer_data["check_result"] = result
-    claimer_data["username_type"] = username_type
-    
-    # Create response based on availability
-    if result["available"] is True:
-        response = f"""
-✅ *USERNAME AVAILABLE!*
-
-🎯 *Username:* `{target_username}`
-📊 *Type:* {username_type}
-🟢 *Status:* **AVAILABLE** 🎉
-
-🔍 *Check Result:* {result['message']}
-
-💡 *What happens if you claim it:*
-• Your current username `{claimer_data['current_username']}` will be freed
-• Your account will become `@{target_username}`
-
-**Do you want to claim this username?**
-"""
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("✅ YES, Claim Now!", callback_data=f"claim_username_{target_username}"),
-            InlineKeyboardButton("❌ No, Check Another", callback_data="check_another_username")
-        )
-        
-    elif result["available"] is False:
-        response = f"""
-❌ *USERNAME TAKEN*
-
-🎯 *Username:* `{target_username}`
-📊 *Type:* {username_type}
-🔴 *Status:* **UNAVAILABLE**
-
-🔍 *Reason:* {result['message']}
-
-💡 *Tips:*
-• Try variations with dots/underscores
-• Check for similar names
-• The owner might release it soon
-"""
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("🔄 Check Similar", callback_data=f"check_similar_{target_username}"),
-            InlineKeyboardButton("🔍 Check Another", callback_data="check_another_username")
-        )
-        
-    else:
-        response = f"""
-⚠️ *CHECK FAILED*
-
-🎯 *Username:* `{target_username}`
-📊 *Type:* {username_type}
-🟡 *Status:* **UNKNOWN**
-
-🔍 *Error:* {result['message']}
-
-💡 *Try:*
-• Check manually on Instagram
-• Try again in 5 minutes
-• Use different session
-"""
-        markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton("🔄 Try Again", callback_data="check_another_username"))
-    
-    bot.edit_message_text(
-        response,
-        chat_id,
-        check_msg.message_id,
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
-
-def claim_username(chat_id, target_username):
-    """Claim an available username"""
-    if chat_id not in claimer_sessions:
-        bot.send_message(chat_id, "❌ Session expired. Please start over.")
-        return
-    
-    claimer_data = claimer_sessions[chat_id]
-    session_id = claimer_data["session"]
-    current_username = claimer_data["current_username"]
-    
-    # Show claiming progress
-    progress_msg = bot.send_message(
-        chat_id,
-        f"🚀 *Claiming @{target_username}...*\n\n"
-        f"Changing {current_username} → @{target_username}\n"
-        f"Please wait...",
-        parse_mode="Markdown"
-    )
-    
-    # Change username
-    csrf_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-    success = change_username_account2(
-        chat_id,
-        session_id,
-        csrf_token,
-        target_username
-    )
-    
-    if success:
-        # Update database
-        save_session_to_db(chat_id, "claimer", session_id, target_username)
-        
-        # Update session data
-        session_data[chat_id]["claimer_username"] = f"@{target_username}"
-        
-        bot.edit_message_text(
-            f"🎉 *USERNAME CLAIMED SUCCESSFULLY!*\n\n"
-            f"✅ {current_username} → `@{target_username}`\n\n"
-            f"⏰ Time: {datetime.now().strftime('%H:%M:%S')}\n"
-            f"📊 Your account now has the new username!\n\n"
-            f"*Note:* Your old username `{current_username}` is now available for anyone to claim.",
-            chat_id,
-            progress_msg.message_id,
-            parse_mode="Markdown"
-        )
-        
-        # Log the claim
-        log_swap(chat_id, target_username, "success", "Username Claimer")
-        
-        # Send notification
-        send_notifications(chat_id, target_username, "Claimed")
-        
-        # Clear claimer data
-        if chat_id in claimer_sessions:
-            del claimer_sessions[chat_id]
-            
-    else:
-        bot.edit_message_text(
-            f"❌ *CLAIM FAILED!*\n\n"
-            f"Could not claim `@{target_username}`\n\n"
-            f"Possible reasons:\n"
-            f"• Username was taken just now\n"
-            f"• Session expired\n"
-            f"• Instagram blocked the change\n\n"
-            f"Try checking again or use a different session.",
-            chat_id,
-            progress_msg.message_id,
-            parse_mode="Markdown"
-        )
-        
-        # Log the failed claim
-        log_swap(chat_id, target_username, "failed", "Claim failed")
-
-def show_claimer_info(chat_id):
-    """Show claimer session information"""
-    user_sessions = get_user_sessions(chat_id)
-    
-    if not user_sessions['claimer']:
-        response = "❌ *No Claimer Session Setup!*\n\nSetup a claimer session to use this feature."
-    else:
-        response = f"""
-🚀 *Claimer Session Info*
-
-✅ *Account:* {user_sessions['claimer_username']}
-📅 *Setup:* Session validated
-
-*How to use:*
-1. Go to '🔍 Check & Claim Username'
-2. Enter username to check
-3. If available, claim it instantly
-
-*What happens when you claim:*
-• Current username becomes available
-• Account gets the new username
-• One-step process, no extra accounts needed
-
-*Tips:*
-• Check for 1L/2L/3L usernames (rare!)
-• Numbers-only usernames are valuable
-• Act fast when you find available names
-"""
-    
-    bot.send_message(chat_id, response, parse_mode="Markdown")
-    show_username_claimer_menu(chat_id)
-
-# ==================== ADMIN COMMANDS ====================
-@bot.message_handler(commands=['refreshbot'])
-def refreshbot_command(message):
-    """Refresh bot - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        # Reload configuration
-        global start_time
-        start_time = time.time()
-        
-        # Clear caches
-        session_data.clear()
-        rate_limit_cooldowns.clear()
-        user_states.clear()
-        pending_swaps.clear()
-        bidding_sessions.clear()
-        vouch_requests.clear()
-        claimer_sessions.clear()  # NEW: Clear claimer sessions
-        
-        # Reinitialize database connection
-        init_database()
-        
-        bot.reply_to(message, "🔄 *Bot refreshed successfully!*\n\n• Caches cleared\n• Database reconnected\n• Timestamp reset", parse_mode="Markdown")
-        
-        # Send to admin group
-        try:
-            bot.send_message(
-                ADMIN_GROUP_ID,
-                f"🔄 *Bot Refreshed*\n\n"
-                f"Admin: {message.from_user.username}\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error refreshing bot: {str(e)}")
-
-@bot.message_handler(commands=['ping'])
-def ping_command(message):
-    """Check bot response time"""
-    if message.chat.type != 'private':
-        return
-    
-    start = time.time()
-    msg = bot.reply_to(message, "🏓 Pinging...")
-    end = time.time()
-    
-    response_time = round((end - start) * 1000, 2)
-    
-    bot.edit_message_text(
-        f"🏓 *PONG!*\n\n"
-        f"• Response Time: `{response_time}ms`\n"
-        f"• Bot Uptime: `{str(timedelta(seconds=int(time.time() - start_time)))}`\n"
-        f"• Users Online: `{execute_one('SELECT COUNT(*) FROM users WHERE last_active > ?', ((datetime.now() - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S'),))[0] or 0}`",
-        message.chat.id,
-        msg.message_id,
-        parse_mode="Markdown"
-    )
-
-@bot.message_handler(commands=['botstatus'])
-def botstatus_command(message):
-    """Check bot status - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        # Get system stats
-        uptime = str(timedelta(seconds=int(time.time() - start_time)))
-        
-        # Database stats
-        total_users = execute_one("SELECT COUNT(*) FROM users")[0] or 0
-        active_users = execute_one(
-            "SELECT COUNT(*) FROM users WHERE last_active > ?",
-            ((datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),)
-        )[0] or 0
-        
-        total_swaps = execute_one("SELECT COUNT(*) FROM swap_history")[0] or 0
-        successful_swaps = execute_one("SELECT COUNT(*) FROM swap_history WHERE status = 'success'")[0] or 0
-        
-        # Marketplace stats
-        active_listings = execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active'")[0] or 0
-        active_swaps = execute_one("SELECT COUNT(*) FROM marketplace_swaps WHERE status IN ('created', 'payment_received')")[0] or 0
-        
-        # System memory
-        memory = psutil.virtual_memory()
-        cpu = psutil.cpu_percent(interval=1)
-        
-        # Bot API status
-        api_status = "✅ Online" if check_instagram_api() else "❌ Offline"
-        
-        response = (
-            f"🤖 *BOT STATUS REPORT*\n\n"
-            f"*System Info:*\n"
-            f"• Uptime: `{uptime}`\n"
-            f"• CPU Usage: `{cpu}%`\n"
-            f"• Memory Usage: `{memory.percent}%`\n"
-            f"• Threads: `{threading.active_count()}`\n\n"
-            
-            f"*Bot Stats:*\n"
-            f"• Total Users: `{total_users}`\n"
-            f"• Active (1h): `{active_users}`\n"
-            f"• Total Swaps: `{total_swaps}`\n"
-            f"• Successful: `{successful_swaps}`\n"
-            f"• API Requests: `{requests_count}`\n"
-            f"• API Errors: `{errors_count}`\n\n"
-            
-            f"*Marketplace Stats:*\n"
-            f"• Active Listings: `{active_listings}`\n"
-            f"• Active Swaps: `{active_swaps}`\n"
-            f"• Total Listings: `{execute_one('SELECT COUNT(*) FROM marketplace_listings')[0] or 0}`\n"
-            f"• Active Auctions: `{execute_one('SELECT COUNT(*) FROM marketplace_listings WHERE sale_type = \"auction\" AND status = \"active\"')[0] or 0}`\n\n"
-            
-            f"*Service Status:*\n"
-            f"• Instagram API: {api_status}\n"
-            f"• Database: `✅ Connected`\n"
-            f"• Encryption: `✅ Active`\n"
-            f"• Web Server: `✅ Running`\n\n"
-            
-            f"*Cache Status:*\n"
-            f"• Session Data: `{len(session_data)} users`\n"
-            f"• Pending Swaps: `{len(pending_swaps)}`\n"
-            f"• User States: `{len(user_states)}`\n"
-            f"• Bidding Sessions: `{len(bidding_sessions)}`\n"
-            f"• Claimer Sessions: `{len(claimer_sessions)}`\n"  # NEW: Claimer stats
-        )
-        
-        bot.reply_to(message, response, parse_mode="Markdown")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error getting bot status: {str(e)}")
-
-@bot.message_handler(commands=['users'])
-def admin_users(message):
-    """List all users - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        page = 1
-        if len(message.text.split()) > 1:
-            try:
-                page = int(message.text.split()[1])
-            except:
-                pass
-        
-        per_page = 10
-        offset = (page - 1) * per_page
-        
-        users = execute_query('''
-            SELECT user_id, username, first_name, tier, approved, is_banned, 
-                   credits, total_swaps, successful_swaps, join_date, total_referrals,
-                   vouch_score, positive_vouches, negative_vouches
-            FROM users 
-            ORDER BY user_id
-            LIMIT ? OFFSET ?
-        ''', (per_page, offset))
-        
-        total = execute_one("SELECT COUNT(*) FROM users")[0]
-        
-        response = f"👥 *Users List (Page {page})*\n\n"
-        response += f"Total Users: {total}\n\n"
-        
-        for user in users:
-            status = "✅" if user["approved"] else "⏳"
-            status = "❌" if user["is_banned"] else status
-            
-            response += (
-                f"ID: `{user['user_id']}`\n"
-                f"Name: {user['first_name']} (@{user['username'] or 'N/A'})\n"
-                f"Tier: {user['tier'].upper()} | Credits: {user['credits']}\n"
-                f"Swaps: {user['total_swaps']} ({user['successful_swaps']}✅)\n"
-                f"Referrals: {user['total_referrals']} | Vouch: {user['vouch_score']} ({user['positive_vouches']}+/{user['negative_vouches']}-)\n"
-                f"Status: {status}\n"
-                f"Joined: {user['join_date'][:10]}\n"
-                f"────────────────────\n"
-            )
-        
-        bot.reply_to(message, response, parse_mode="Markdown")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['ban'])
-def admin_ban(message):
-    """Ban a user - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /ban <user_id> <reason>")
-            return
-        
-        target_id = int(parts[1])
-        reason = " ".join(parts[2:]) if len(parts) > 2 else "Violation of terms"
-        
-        # Check if user exists
-        user = execute_one("SELECT username FROM users WHERE user_id = ?", (target_id,))
-        if not user:
-            bot.reply_to(message, "❌ User not found")
-            return
-        
-        # Ban user
-        execute_query('''
-            UPDATE users 
-            SET is_banned = 1, ban_reason = ?
-            WHERE user_id = ?
-        ''', (reason, target_id), commit=True)
-        
-        # Notify user
-        try:
-            bot.send_message(
-                target_id,
-                f"🚫 *You have been banned*\n\n"
-                f"Reason: {reason}\n"
-                f"Appeal: Contact @CARNAGEV1"
-            )
-        except:
-            pass
-        
-        bot.reply_to(message, f"✅ User {target_id} has been banned.\nReason: {reason}")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['unban'])
-def admin_unban(message):
-    """Unban a user - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /unban <user_id>")
-            return
-        
-        target_id = int(parts[1])
-        
-        # Check if user exists and is banned
-        user = execute_one("SELECT username, is_banned FROM users WHERE user_id = ?", (target_id,))
-        if not user:
-            bot.reply_to(message, "❌ User not found")
-            return
-        
-        if not user[1]:
-            bot.reply_to(message, "❌ User is not banned")
-            return
-        
-        # Unban user
-        execute_query('''
-            UPDATE users 
-            SET is_banned = 0, ban_reason = NULL
-            WHERE user_id = ?
-        ''', (target_id,), commit=True)
-        
-        # Notify user
-        try:
-            bot.send_message(
-                target_id,
-                f"✅ *You have been unbanned!*\n\n"
-                f"You can now use the bot again."
-            )
-        except:
-            pass
-        
-        bot.reply_to(message, f"✅ User {target_id} has been unbanned.")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['bannedusers'])
-def admin_bannedusers(message):
-    """Show banned users with inline buttons - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        banned_users = execute_query('''
-            SELECT user_id, username, first_name, ban_reason, join_date
-            FROM users 
-            WHERE is_banned = 1
-            ORDER BY user_id
-        ''')
-        
-        if not banned_users:
-            bot.reply_to(message, "🚫 No banned users found.")
-            return
-        
-        response = f"🚫 *Banned Users ({len(banned_users)})*\n\n"
-        markup = InlineKeyboardMarkup(row_width=2)
-        
-        for user in banned_users:
-            user_id_str = str(user[0])
-            response += (
-                f"ID: `{user[0]}`\n"
-                f"Name: {user[2]} (@{user[1] or 'N/A'})\n"
-                f"Reason: {user[3] or 'No reason'}\n"
-                f"Joined: {user[4][:10]}\n"
-                f"────────────────────\n"
-            )
-            
-            # Add unban button for each user
-            markup.add(
-                InlineKeyboardButton(f"✅ Unban {user[2]}", callback_data=f"unban_{user[0]}"),
-                InlineKeyboardButton(f"👁️ View", callback_data=f"viewbanned_{user[0]}")
-            )
-        
-        markup.add(InlineKeyboardButton("🔄 Refresh", callback_data="refresh_banned"))
-        
-        bot.reply_to(message, response, parse_mode="Markdown", reply_markup=markup)
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['approve'])
-def admin_approve(message):
-    """Approve a user - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /approve <user_id> <duration>")
-            bot.reply_to(message, "Duration examples: test, 2d, 7d, 30d, permanent")
-            return
-        
-        target_id = int(parts[1])
-        duration = parts[2] if len(parts) > 2 else "permanent"
-        
-        # Calculate approval until date
-        if duration == "test":
-            approved_until = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-            duration_text = "1 hour (test)"
-        elif duration == "permanent":
-            approved_until = "9999-12-31 23:59:59"
-            duration_text = "permanent"
-        else:
-            # Parse duration like 2d, 7d, 30d
-            days = int(duration[:-1])
-            approved_until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-            duration_text = f"{days} days"
-        
-        # Approve user
-        execute_query('''
-            UPDATE users 
-            SET approved = 1, approved_until = ?
-            WHERE user_id = ?
-        ''', (approved_until, target_id), commit=True)
-        
-        # Give some free credits
-        execute_query("UPDATE users SET credits = credits + 100 WHERE user_id = ?", (target_id,), commit=True)
-        
-        # Notify user
-        try:
-            bot.send_message(
-                target_id,
-                f"🎉 *Your account has been approved!*\n\n"
-                f"• Duration: {duration_text}\n"
-                f"• Free Credits: 100 🪙\n"
-                f"• Start swapping now!\n\n"
-                f"Use /help for commands"
-            )
-        except:
-            pass
-        
-        bot.reply_to(message, f"✅ User {target_id} approved for {duration_text} with 100 free credits.")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['addcredits'])
-def admin_addcredits(message):
-    """Add credits to user - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            bot.reply_to(message, "Usage: /addcredits <user_id> <amount>")
-            return
-        
-        target_id = int(parts[1])
-        amount = int(parts[2])
-        
-        # Add credits
-        execute_query("UPDATE users SET credits = credits + ? WHERE user_id = ?",
-                     (amount, target_id), commit=True)
-        
-        # Notify user
-        try:
-            bot.send_message(
-                target_id,
-                f"🎁 *You received credits!*\n\n"
-                f"Amount: +{amount} credits\n"
-                f"New Balance: {execute_one('SELECT credits FROM users WHERE user_id = ?', (target_id,))[0]} credits\n\n"
-                f"Use them for swapping or in marketplace!",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-        bot.reply_to(message, f"✅ Added {amount} credits to user {target_id}")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['stats'])
-def admin_stats(message):
-    """Show bot statistics - ADMIN ONLY"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        # Get stats
-        total_users = execute_one("SELECT COUNT(*) FROM users")[0]
-        active_users = execute_one("SELECT COUNT(*) FROM users WHERE last_active > ?",
-                                  ((datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),))[0]
-        
-        total_swaps = execute_one("SELECT COUNT(*) FROM swap_history")[0]
-        successful_swaps = execute_one("SELECT COUNT(*) FROM swap_history WHERE status = 'success'")[0]
-        
-        total_referrals = execute_one("SELECT SUM(total_referrals) FROM users")[0] or 0
-        
-        # Calculate success rate
-        success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
-        
-        # Bot uptime
-        uptime_seconds = time.time() - start_time
-        uptime_str = str(timedelta(seconds=int(uptime_seconds)))
-        
-        response = (
-            f"📊 *Bot Statistics*\n\n"
-            f"🤖 *Users:*\n"
-            f"• Total: {total_users}\n"
-            f"• Active (24h): {active_users}\n\n"
-            
-            f"🔄 *Swaps:*\n"
-            f"• Total: {total_swaps}\n"
-            f"• Successful: {successful_swaps}\n"
-            f"• Success Rate: {success_rate:.1f}%\n\n"
-            
-            f"🎁 *Referrals:*\n"
-            f"• Total: {total_referrals}\n"
-            f"• Active Referrers: {execute_one('SELECT COUNT(DISTINCT referrer_id) FROM referral_tracking')[0]}\n\n"
-            
-            f"⚙️ *System:*\n"
-            f"• Uptime: {uptime_str}\n"
-            f"• Requests: {requests_count}\n"
-            f"• Errors: {errors_count}\n"
-            f"• API Status: {'✅ Online' if check_instagram_api() else '❌ Offline'}\n\n"
-            
-            f"💾 *Database:*\n"
-            f"• Size: {get_database_size()} KB\n"
-        )
-        
-        bot.reply_to(message, response, parse_mode="Markdown")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-def check_instagram_api():
-    """Check if Instagram API is working"""
-    try:
-        response = requests.get("https://www.instagram.com", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def get_database_size():
-    """Get database file size"""
-    try:
-        return os.path.getsize('users.db') // 1024
-    except:
-        return 0
-
-# ==================== COMMAND HANDLERS ====================
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
-    last_name = message.from_user.last_name or ""
-    
-    referral_code = "direct"
-    if len(message.text.split()) > 1:
-        param = message.text.split()[1]
-        if param.startswith("ref-"):
-            referral_code = param[4:]
-    
-    add_user(user_id, username, first_name, last_name, referral_code)
-    update_user_active(user_id)
-    
-    if has_joined_all_channels(user_id):
-        if referral_code != "direct":
-            bot.send_message(user_id, "✅ *Approved via referral!* You can start swapping immediately!", parse_mode="Markdown")
-            show_main_menu(user_id)
-        elif is_user_approved(user_id):
-            show_main_menu(user_id)
-        else:
-            bot.send_message(
-                user_id,
-                "⏳ *Access pending approval*\n\n"
-                "Contact @CARNAGEV1 or use referral system for instant access!\n"
-                "Tip: Get a friend to refer you for instant approval + 2 FREE swaps! 🎁",
-                parse_mode="Markdown"
-            )
-    else:
-        send_welcome_with_channels(user_id, first_name)
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    """Show help menu"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    help_text = """
-🆘 *CARNAGE Bot Help*
-
-*Basic Commands:*
-/start - Start the bot
-/help - Show this help
-/tutorial - Interactive tutorial
-
-*User Features:*
-/dashboard - Your personal dashboard
-/stats - Your statistics
-/achievements - Your unlocked badges
-/referral - Your referral link
-/vouches - Your vouch profile
-
-*Swap Features (DM ONLY):*
-• Real Instagram username swapping
-• Working API with rate limit handling
-• Session validation and management
-• Backup mode and threads support
-
-*🚀 NEW: Username Claimer Feature (DM ONLY):*
-• Check username availability
-• Claim available usernames instantly
-• Only ONE session needed
-• No target account required
-
-*Marketplace Features (DM ONLY):*
-/marketplace - Browse username listings
-/sell - List username for sale (Real money only)
-/bid - Place bid on auction
-/mybids - View your active bids
-
-*Auction System:*
-• Fixed price and auction listings
-• Automatic bid increments
-• Buy Now option
-• Fake bid protection (permanent ban for fake bids)
-
-*Vouch System:*
-• Automatic vouch requests after swaps
-• Positive/negative feedback
-• Vouch score calculation
-• Verified transactions only
-
-*Admin Commands (Admin only - DM ONLY):*
-/users - List all users
-/ban <id> <reason> - Ban user
-/unban <id> - Unban user
-/bannedusers - Show banned users with options
-/approve <id> <duration> - Approve user
-/addcredits <id> <amount> - Add credits
-/stats - Bot statistics
-/ping - Check bot response time
-/botstatus - Detailed bot status
-/refreshbot - Refresh bot caches
-
-*Middleman Commands (MM only - GROUP ONLY):*
-/mmhelp - Show MM commands
-/createswap - Create new swap
-/rcvd - Mark payment received
-/release - Release funds
-/refund - Refund transaction
-
-*Official Channels:*
-📢 Updates: @CarnageUpdates
-✅ Proofs: @CarnageProofs
-
-*Getting Started:*
-1. Join both channels above
-2. Use /tutorial for step-by-step guide
-3. Add Instagram sessions
-4. Start swapping!
-5. Refer friends for FREE swaps (2 per referral!)
-
-*Need Help?*
-Contact: @CARNAGEV1
-
-*NOTE: All user functions work in DM only!*
-"""
-    
-    bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
-
-@bot.message_handler(commands=['dashboard'])
-def dashboard_command(message):
-    """Dashboard command"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    dashboard_url = f"https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/{user_id}"
-    bot.send_message(user_id, f"📊 *Your Dashboard:*\n\n{dashboard_url}", parse_mode="Markdown")
-
-@bot.message_handler(commands=['referral', 'refer'])
-def referral_command(message):
-    """Referral command"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    # Get referral code
-    result = execute_one("SELECT referral_code FROM users WHERE user_id = ?", (user_id,))
-    if result:
-        referral_code = result[0]
-        referral_link = f"https://t.me/{BOT_USERNAME}?start=ref-{referral_code}"
-        
-        # Get referral stats
-        ref_count = get_user_referrals_count(user_id)
-        free_swaps = get_user_free_swaps(user_id)
-        
-        response = (
-            f"🎁 *Your Referral Program*\n\n"
-            f"*Your Link:*\n`{referral_link}`\n\n"
-            f"*How it works:*\n"
-            f"1. Share your link with friends\n"
-            f"2. When they join using your link\n"
-            f"3. You get **2 FREE swaps** for each friend!\n"
-            f"4. They get instant approval\n\n"
-            f"*Your Stats:*\n"
-            f"• Total Referrals: {ref_count}\n"
-            f"• Free Swaps Earned: {free_swaps}\n"
-            f"• Credits: {execute_one('SELECT credits FROM users WHERE user_id = ?', (user_id,))[0]}\n\n"
-            f"*Rewards:*\n"
-            f"• 1 referral = 2 FREE swaps\n"
-            f"• 5 referrals = Achievement badge\n"
-            f"• 10 referrals = VIP features (coming soon)\n\n"
-            f"Start sharing now! 🚀"
-        )
-        
-        bot.send_message(user_id, response, parse_mode="Markdown")
-    else:
-        bot.send_message(user_id, "❌ Error generating referral link")
-
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    """Stats command"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    stats = get_user_detailed_stats(user_id)
-    if stats:
-        response = f"""
-📊 *Your Statistics*
-
-*Basic Info:*
-• User ID: `{stats['user_id']}`
-• Username: @{stats['username']}
-• Tier: {stats['tier'].upper()}
-• Status: {"✅ Approved" if is_user_approved(user_id) else "⏳ Pending"}
-• Joined: {stats['join_date'][:10]}
-• Last Active: {stats['last_active'][:16]}
-
-*Swap Stats:*
-• Total Swaps: {stats['total_swaps']}
-• Successful: {stats['successful_swaps']}
-• Success Rate: {stats['success_rate']:.1f}%
-
-*Referral Stats:*
-• Total Referrals: {stats['total_referrals']}
-• Free Swaps Available: {stats['free_swaps']}
-
-*Vouch Stats:*
-• Vouch Score: {stats['vouch_score']}
-• Positive Vouches: {stats['positive_vouches']}
-• Negative Vouches: {stats['negative_vouches']}
-• Total Transactions: {stats['total_transactions']}
-
-*Credits:*
-• Balance: {stats['credits']} 🪙
-"""
-        bot.send_message(user_id, response, parse_mode="Markdown")
-    else:
-        bot.send_message(user_id, "📊 *No statistics yet. Start swapping!*", parse_mode="Markdown")
-
-# ==================== MENU HANDLERS ====================
-@bot.message_handler(func=lambda message: message.chat.type == 'private')
-def handle_private_messages(message):
-    chat_id = message.chat.id
-    text = message.text
-    
-    update_user_active(chat_id)
-    
-    # Check if in tutorial
-    if chat_id in tutorial_sessions:
-        handle_tutorial_response(chat_id, text)
-        return
-    
-    # Check channel membership first
-    if not has_joined_all_channels(chat_id):
-        if text == "/start":
-            start_command(message)
-            return
-        send_welcome_with_channels(chat_id, message.from_user.first_name)
-        return
-    
-    # Initialize session data
-    init_session_data(chat_id)
-    
-    # Handle menu navigation
-    if text == "Back":
-        if session_data[chat_id]["previous_menu"] == "main":
-            show_main_menu(chat_id)
-        elif session_data[chat_id]["previous_menu"] == "swapper":
-            show_swapper_menu(chat_id)
-        elif session_data[chat_id]["previous_menu"] == "settings":
-            show_settings_menu(chat_id)
-        elif session_data[chat_id]["previous_menu"] == "claimer":
-            show_username_claimer_menu(chat_id)
-        else:
-            show_main_menu(chat_id)
-        return
-    
-    if text in ["📊 Dashboard", "Dashboard"]:
-        dashboard_command(message)
-        return
-    
-    if text in ["🎁 Referral", "Referral"]:
-        referral_command(message)
-        return
-    
-    if text in ["🏆 Achievements", "Achievements"]:
-        achievements_command(message)
-        return
-    
-    if text in ["📈 Stats", "Stats"]:
-        stats_command(message)
-        return
-    
-    if text == "📱 Main Session":
-        session_data[chat_id]["current_menu"] = "main_session_input"
-        session_data[chat_id]["previous_menu"] = "main"
-        bot.send_message(chat_id, "<b>📥 Send Main Session ID</b>\n\nPaste your Instagram session ID:", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_main_session)
-        return
-    
-    if text == "🎯 Target Session":
-        session_data[chat_id]["current_menu"] = "target_session_input"
-        session_data[chat_id]["previous_menu"] = "main"
-        bot.send_message(chat_id, "<b>🎯 Send Target Session ID</b>\n\nPaste target account session ID:", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_target_session)
-        return
-    
-    if text == "🔄 Swapper":
-        session_data[chat_id]["previous_menu"] = "main"
-        show_swapper_menu(chat_id)
-        return
-    
-    if text == "⚙️ Settings":
-        session_data[chat_id]["previous_menu"] = "main"
-        show_settings_menu(chat_id)
-        return
-    
-    if text == "🛒 Marketplace":
-        marketplace_command(message)
-        return
-    
-    # NEW: Username Claimer menu option
-    if text == "🚀 Username Claimer":
-        session_data[chat_id]["previous_menu"] = "main"
-        show_username_claimer_menu(chat_id)
-        return
-    
-    # NEW: Username Claimer sub-menu options
-    if text == "✅ Setup Claimer Session":
-        setup_claimer_session(chat_id)
-        return
-    
-    if text == "🔍 Check & Claim Username":
-        start_username_check(chat_id)
-        return
-    
-    if text == "🔄 Change Claimer Session":
-        setup_claimer_session(chat_id)
-        return
-    
-    if text == "📊 Claimer Info":
-        show_claimer_info(chat_id)
-        return
-    
-    if text in ["Run Main Swap", "BackUp Mode", "Threads Swap"]:
-        handle_swap_option(chat_id, text)
-        return
-    
-    if text in ["Bio", "Name", "Webhook", "Check Block", "Close Sessions"]:
-        handle_settings_option(chat_id, text)
-        return
-    
-    # Default response for admin commands in menu
-    if text.startswith('/'):
-        # Let command handlers process it
-        return
-    
-    # Default response
-    bot.send_message(chat_id, "🤖 *CARNAGE Swapper - Main Menu*\n\nUse the buttons below or type /help for commands.", parse_mode="Markdown")
-    show_main_menu(chat_id)
-
-def save_main_session(message):
-    """Save main session"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    session_id = message.text.strip()
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "❌ Your account is not approved yet.", parse_mode="Markdown")
-        show_main_menu(chat_id)
-        return
-    
-    validation = validate_session(session_id, chat_id)
-    if validation["success"]:
-        username = validation["username"]
-        session_data[chat_id]["main"] = session_id
-        session_data[chat_id]["main_username"] = f"@{username}"
-        session_data[chat_id]["main_validated_at"] = time.time()
-        save_session_to_db(chat_id, "main", session_id, username)
-        bot.send_message(chat_id, f"✅ *Main Session Logged @{username}*", parse_mode="Markdown")
-    else:
-        bot.send_message(chat_id, f"❌ {validation['error']}", parse_mode="Markdown")
-    
-    show_main_menu(chat_id)
-
-def save_target_session(message):
-    """Save target session"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    session_id = message.text.strip()
-    
-    if not is_user_approved(chat_id):
-        bot.send_message(chat_id, "❌ Your account is not approved yet.", parse_mode="Markdown")
-        show_main_menu(chat_id)
-        return
-    
-    validation = validate_session(session_id, chat_id)
-    if validation["success"]:
-        username = validation["username"]
-        session_data[chat_id]["target"] = session_id
-        session_data[chat_id]["target_username"] = f"@{username}"
-        session_data[chat_id]["target_validated_at"] = time.time()
-        save_session_to_db(chat_id, "target", session_id, username)
-        bot.send_message(chat_id, f"✅ *Target Session Logged @{username}*", parse_mode="Markdown")
-    else:
-        bot.send_message(chat_id, f"❌ {validation['error']}", parse_mode="Markdown")
-    
-    show_main_menu(chat_id)
-
-def handle_swap_option(chat_id, option):
-    """Handle swap option selection"""
-    if option == "Run Main Swap":
-        run_main_swap(chat_id)
-    elif option == "BackUp Mode":
-        session_data[chat_id]["current_menu"] = "backup_session_input"
-        bot.send_message(chat_id, "<b>💾 Send Backup Session ID</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_backup_session)
-    elif option == "Threads Swap":
-        session_data[chat_id]["current_menu"] = "threads_input"
-        bot.send_message(chat_id, "<b>🧵 Send Number of Threads (Recommended: 30+)</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_swapper_threads)
-
-def handle_settings_option(chat_id, option):
-    """Handle settings option selection"""
-    if option == "Bio":
-        session_data[chat_id]["current_menu"] = "bio_input"
-        bot.send_message(chat_id, "<b>📝 Send Bio Text</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_bio)
-    elif option == "Name":
-        session_data[chat_id]["current_menu"] = "name_input"
-        bot.send_message(chat_id, "<b>📛 Send Webhook Footer Name</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_name)
-    elif option == "Webhook":
-        session_data[chat_id]["current_menu"] = "webhook_input"
-        bot.send_message(chat_id, "<b>🔗 Send Discord Webhook URL</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, save_swap_webhook)
-    elif option == "Check Block":
-        session_data[chat_id]["current_menu"] = "check_block_input"
-        bot.send_message(chat_id, "<b>🔒 Check Account Swappable? (Y/N)</b>", parse_mode='HTML')
-        bot.register_next_step_handler_by_chat_id(chat_id, process_check_block)
-    elif option == "Close Sessions":
-        clear_session_data(chat_id, "close")
-        bot.send_message(chat_id, "<b>🗑️ All Sessions Cleared</b>", parse_mode='HTML')
-        show_settings_menu(chat_id)
-
-def save_backup_session(message):
-    """Save backup session"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    session_id = message.text.strip()
-    
-    validation = validate_session(session_id, chat_id)
-    if validation["success"]:
-        username = validation["username"]
-        session_data[chat_id]["backup"] = session_id
-        session_data[chat_id]["backup_username"] = f"@{username}"
-        save_session_to_db(chat_id, "backup", session_id, username)
-        bot.send_message(chat_id, f"✅ *Backup Session Logged @{username}*", parse_mode="Markdown")
-    else:
-        bot.send_message(chat_id, f"❌ {validation['error']}", parse_mode="Markdown")
-    
-    show_swapper_menu(chat_id)
-
-def save_swapper_threads(message):
-    """Save swapper threads"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    try:
-        threads = int(message.text)
-        if threads >= 1:
-            session_data[chat_id]["swapper_threads"] = threads
-            bot.send_message(chat_id, f"✅ *Threads Set: {threads}*", parse_mode="Markdown")
-        else:
-            bot.send_message(chat_id, "❌ Enter number ≥ 1", parse_mode="Markdown")
-    except:
-        bot.send_message(chat_id, "❌ Enter valid number", parse_mode="Markdown")
-    
-    show_swapper_menu(chat_id)
-
-def save_bio(message):
-    """Save bio"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    bio = message.text.strip()
-    session_data[chat_id]["bio"] = bio
-    bot.send_message(chat_id, "✅ *Bio Saved*", parse_mode="Markdown")
-    show_settings_menu(chat_id)
-
-def save_name(message):
-    """Save name"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    name = message.text.strip()
-    session_data[chat_id]["name"] = name
-    bot.send_message(chat_id, "✅ *Name Saved*", parse_mode="Markdown")
-    show_settings_menu(chat_id)
-
-def save_swap_webhook(message):
-    """Save webhook"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    webhook = message.text.strip()
-    session_data[chat_id]["swap_webhook"] = webhook
-    bot.send_message(chat_id, "✅ *Webhook Saved*", parse_mode="Markdown")
-    show_settings_menu(chat_id)
-
-def process_check_block(message):
-    """Process check block"""
-    if message.chat.type != 'private':
-        return
-    
-    chat_id = message.chat.id
-    response = message.text.strip().lower()
-    if response == 'y':
-        bot.send_message(chat_id, "✅ *Account is swappable!*", parse_mode="Markdown")
-    elif response == 'n':
-        bot.send_message(chat_id, "❌ *Account is not swappable!*", parse_mode="Markdown")
-    else:
-        bot.send_message(chat_id, "❌ Send 'Y' or 'N'", parse_mode="Markdown")
-    
-    show_settings_menu(chat_id)
-
-def clear_session_data(chat_id, session_type):
-    """Clear session data"""
-    if chat_id not in session_data:
-        return
-        
-    if session_type == "main":
-        session_data[chat_id]["main"] = None
-        session_data[chat_id]["main_username"] = None
-        session_data[chat_id]["main_validated_at"] = None
-    elif session_type == "target":
-        session_data[chat_id]["target"] = None
-        session_data[chat_id]["target_username"] = None
-        session_data[chat_id]["target_validated_at"] = None
-    elif session_type == "backup":
-        session_data[chat_id]["backup"] = None
-        session_data[chat_id]["backup_username"] = None
-    elif session_type == "claimer":
-        session_data[chat_id]["claimer"] = None
-        session_data[chat_id]["claimer_username"] = None
-        session_data[chat_id]["claimer_validated_at"] = None
-    elif session_type == "close":
-        session_data[chat_id]["main"] = None
-        session_data[chat_id]["main_username"] = None
-        session_data[chat_id]["main_validated_at"] = None
-        session_data[chat_id]["target"] = None
-        session_data[chat_id]["target_username"] = None
-        session_data[chat_id]["target_validated_at"] = None
-        session_data[chat_id]["backup"] = None
-        session_data[chat_id]["backup_username"] = None
-        session_data[chat_id]["claimer"] = None
-        session_data[chat_id]["claimer_username"] = None
-        session_data[chat_id]["claimer_validated_at"] = None
-
-def run_main_swap(chat_id):
-    """Run main swap"""
-    global requests_count, errors_count
-    
-    if not session_data[chat_id]["main"] or not session_data[chat_id]["target"]:
-        bot.send_message(chat_id, "❌ *Set Main and Target Sessions first*", parse_mode="Markdown")
-        show_swapper_menu(chat_id)
-        return
-    
-    # Validate sessions
-    main_valid = validate_session(session_data[chat_id]["main"], chat_id)
-    target_valid = validate_session(session_data[chat_id]["target"], chat_id)
-    
-    if not main_valid["success"] or not target_valid["success"]:
-        bot.send_message(chat_id, "❌ *Invalid Main or Target Session*", parse_mode="Markdown")
-        show_swapper_menu(chat_id)
-        return
-    
-    try:
-        progress_message = bot.send_message(chat_id, "🔄 *Starting swap...*", parse_mode="Markdown")
-        message_id = progress_message.message_id
-        
-        animation_frames = [
-            "🔄 *Swapping username... █*",
-            "🔄 *Swapping username... ██*",
-            "🔄 *Swapping username... ███*",
-            "🔄 *Swapping username... ████*"
-        ]
-        
-        csrf_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-        target_session = session_data[chat_id]["target"]
-        target_username = session_data[chat_id]["target_username"]
-        random_username = generate_random_username()
-        
-        # Step 1: Change target to random username
-        bot.edit_message_text("🔄 *Changing target to random username...*", chat_id, message_id, parse_mode="Markdown")
-        for i in range(4):
-            bot.edit_message_text(animation_frames[i], chat_id, message_id, parse_mode="Markdown")
-            time.sleep(0.5)
-        
-        time.sleep(2)
-        random_username_full = change_username_account1(chat_id, target_session, csrf_token, random_username)
-        if not random_username_full:
-            bot.edit_message_text(f"❌ *Failed to update target {target_username}*", chat_id, message_id, parse_mode="Markdown")
-            clear_session_data(chat_id, "main")
-            clear_session_data(chat_id, "target")
-            log_swap(chat_id, target_username, "failed", "Failed to change target to random username")
-            show_swapper_menu(chat_id)
-            return
-        
-        # Step 2: Change main to target username
-        bot.edit_message_text(f"🔄 *Setting main to {target_username}...*", chat_id, message_id, parse_mode="Markdown")
-        for i in range(4):
-            bot.edit_message_text(animation_frames[i], chat_id, message_id, parse_mode="Markdown")
-            time.sleep(0.5)
-        
-        time.sleep(2)
-        success = change_username_account2(chat_id, session_data[chat_id]["main"], csrf_token, target_username)
-        
-        if success:
-            bot.edit_message_text(f"✅ *Swap Successful!*\n\n🎯 {target_username}\n⏰ {datetime.now().strftime('%H:%M:%S')}", chat_id, message_id, parse_mode="Markdown")
-            release_time = datetime.now().strftime("%I:%M:%S %p")
-            bot.send_message(chat_id, f"✅ *{target_username} Released [{release_time}]*", parse_mode="Markdown")
-            send_notifications(chat_id, target_username, "Swapped")
-            log_swap(chat_id, target_username, "success")
-        else:
-            bot.edit_message_text(f"❌ *Swap failed for {target_username}*", chat_id, message_id, parse_mode="Markdown")
-            log_swap(chat_id, target_username, "failed", "Swap process failed")
-        
-        clear_session_data(chat_id, "main")
-        clear_session_data(chat_id, "target")
-        
-    except Exception as e:
-        bot.edit_message_text(f"❌ *Error during swap: {str(e)}*", chat_id, message_id, parse_mode="Markdown")
-        log_swap(chat_id, "unknown", "failed", str(e))
-    
-    show_swapper_menu(chat_id)
-
-# ==================== ACHIEVEMENTS ====================
-@bot.message_handler(commands=['achievements'])
-def achievements_command(message):
-    """Achievements command"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    achievements = execute_query('''
-        SELECT achievement_id, achievement_name, achievement_emoji, unlocked_at 
-        FROM achievements WHERE user_id = ? ORDER BY unlocked_at DESC
-    ''', (user_id,))
-    
-    if achievements:
-        response = "🏆 *Your Achievements*\n\n"
-        for ach in achievements:
-            response += f"✅ {ach[2]} *{ach[1]}* - {ach[3].split()[0]}\n"
-    else:
-        response = "🏆 *No achievements yet!*\n\nStart using the bot to unlock badges! 🔄"
-    
-    bot.send_message(user_id, response, parse_mode="Markdown")
-
-# ==================== VOUCH SYSTEM ====================
-@bot.message_handler(commands=['vouches'])
-def vouches_command(message):
-    """Show user's vouch profile"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    # Get user vouch stats
-    user_stats = execute_one('''
-        SELECT username, vouch_score, positive_vouches, negative_vouches, total_transactions
-        FROM users WHERE user_id = ?
-    ''', (user_id,))
-    
-    if not user_stats:
-        bot.send_message(user_id, "❌ User not found")
-        return
-    
-    username, vouch_score, positive, negative, total_transactions = user_stats
-    
-    # Get recent vouches
-    recent_vouches = execute_query('''
-        SELECT v.vouch_type, v.comment, v.vouch_time, u.username as vouch_by
-        FROM vouches v
-        JOIN users u ON v.user_id = u.user_id
-        WHERE v.vouch_for = ? AND v.verified = 1
-        ORDER BY v.vouch_time DESC
-        LIMIT 10
-    ''', (user_id,))
-    
-    response = f"""
-🤝 *Vouch Profile: @{username or user_id}*
-
-*Vouch Score:* {vouch_score} ⭐
-*Positive Vouches:* {positive} ✅
-*Negative Vouches:* {negative} ❌
-*Total Transactions:* {total_transactions} 📊
-*Trust Level:* {get_trust_level(vouch_score)}
-
-*Recent Vouches:*
-"""
-    
-    if recent_vouches:
-        for vouch in recent_vouches:
-            emoji = "✅" if vouch[0] == "positive" else "❌"
-            response += f"\n{emoji} *{vouch[0].title()}* by @{vouch[3]}"
-            if vouch[1]:
-                response += f"\n\"{vouch[1][:50]}...\""
-            response += f"\n{vouch[2][:10]}\n"
-    else:
-        response += "\nNo vouches yet. Complete transactions to get vouches!"
-    
-    bot.send_message(user_id, response, parse_mode="Markdown")
-
-def get_trust_level(vouch_score):
-    """Get trust level based on vouch score"""
-    if vouch_score >= 100:
-        return "🔒 Highly Trusted"
-    elif vouch_score >= 50:
-        return "✅ Trusted"
-    elif vouch_score >= 20:
-        return "👍 Reliable"
-    elif vouch_score >= 5:
-        return "🆗 New User"
-    else:
-        return "🆕 Unrated"
-
-def request_vouch(swap_id, seller_id, buyer_id):
-    """Request vouch from users after successful swap"""
-    swap = execute_one('''
-        SELECT ms.swap_id, ml.username, ms.amount, ms.currency
-        FROM marketplace_swaps ms
-        JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-        WHERE ms.swap_id = ?
-    ''', (swap_id,))
-    
-    if not swap:
-        return
-    
-    # Request vouch from buyer for seller
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("✅ Positive", callback_data=f"vouch_positive_{swap_id}_{seller_id}"),
-        InlineKeyboardButton("❌ Negative", callback_data=f"vouch_negative_{swap_id}_{seller_id}"),
-        InlineKeyboardButton("⏩ Skip", callback_data=f"vouch_skip_{swap_id}")
-    )
-    
-    vouch_requests[buyer_id] = {
-        "swap_id": swap_id,
-        "vouch_for": seller_id,
-        "step": "waiting"
-    }
-    
-    bot.send_message(
-        buyer_id,
-        f"🤝 *Please leave a vouch for the seller*\n\n"
-        f"Transaction: @{swap[1]}\n"
-        f"Amount: {swap[2]} {swap[3]}\n"
-        f"Swap ID: `{swap_id}`\n\n"
-        f"Your vouch helps build trust in the community!",
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
-    
-    # Request vouch from seller for buyer
-    markup2 = InlineKeyboardMarkup(row_width=2)
-    markup2.add(
-        InlineKeyboardButton("✅ Positive", callback_data=f"vouch_positive_{swap_id}_{buyer_id}"),
-        InlineKeyboardButton("❌ Negative", callback_data=f"vouch_negative_{swap_id}_{buyer_id}"),
-        InlineKeyboardButton("⏩ Skip", callback_data=f"vouch_skip_{swap_id}")
-    )
-    
-    vouch_requests[seller_id] = {
-        "swap_id": swap_id,
-        "vouch_for": buyer_id,
-        "step": "waiting"
-    }
-    
-    bot.send_message(
-        seller_id,
-        f"🤝 *Please leave a vouch for the buyer*\n\n"
-        f"Transaction: @{swap[1]}\n"
-        f"Amount: {swap[2]} {swap[3]}\n"
-        f"Swap ID: `{swap_id}`\n\n"
-        f"Your vouch helps build trust in the community!",
-        parse_mode="Markdown",
-        reply_markup=markup2
-    )
-
-def process_vouch(user_id, swap_id, vouch_for, vouch_type, comment=None):
-    """Process vouch submission"""
-    # Record vouch
-    execute_query('''
-        INSERT INTO vouches (swap_id, user_id, vouch_for, vouch_type, comment, vouch_time, verified)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        swap_id, user_id, vouch_for, vouch_type, comment,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1
-    ), commit=True)
-    
-    # Update vouch statistics
-    if vouch_type == "positive":
-        execute_query('''
-            UPDATE users 
-            SET vouch_score = vouch_score + 10,
-                positive_vouches = positive_vouches + 1
-            WHERE user_id = ?
-        ''', (vouch_for,), commit=True)
-    else:
-        execute_query('''
-            UPDATE users 
-            SET vouch_score = vouch_score - 5,
-                negative_vouches = negative_vouches + 1
-            WHERE user_id = ?
-        ''', (vouch_for,), commit=True)
-    
-    # Update total transactions
-    execute_query('''
-        UPDATE users 
-        SET total_transactions = total_transactions + 1
-        WHERE user_id IN (?, ?)
-    ''', (user_id, vouch_for), commit=True)
-    
-    # Post to proofs channel if positive
-    if vouch_type == "positive":
-        try:
-            vouch_by = execute_one("SELECT username FROM users WHERE user_id = ?", (user_id,))
-            vouch_by_name = f"@{vouch_by[0]}" if vouch_by and vouch_by[0] else f"User {user_id}"
-            
-            vouch_for_user = execute_one("SELECT username FROM users WHERE user_id = ?", (vouch_for))
-            vouch_for_name = f"@{vouch_for_user[0]}" if vouch_for_user and vouch_for_user[0] else f"User {vouch_for}"
-            
-            swap_info = execute_one('''
-                SELECT ml.username, ms.amount, ms.currency
-                FROM marketplace_swaps ms
-                JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-                WHERE ms.swap_id = ?
-            ''', (swap_id,))
-            
-            if swap_info:
-                bot.send_message(
-                    CHANNELS['proofs']['id'],
-                    f"🤝 *NEW VOUCH!*\n\n"
-                    f"✅ *Positive vouch*\n"
-                    f"From: {vouch_by_name}\n"
-                    f"For: {vouch_for_name}\n"
-                    f"Transaction: @{swap_info[0]}\n"
-                    f"Amount: {swap_info[1]} {swap_info[2]}\n"
-                    f"Swap ID: `{swap_id}`\n\n"
-                    f"*Comment:* {comment or 'No comment'}",
-                    parse_mode="Markdown"
-                )
-        except:
-            pass
-    
-    # Remove from pending requests
-    if user_id in vouch_requests:
-        del vouch_requests[user_id]
-    
-    # Mark swap as vouched
-    if vouch_type == "positive":
-        execute_query(
-            "UPDATE marketplace_swaps SET vouch_given = 1 WHERE swap_id = ?",
-            (swap_id,), commit=True
-        )
-    
-    return True
-
-# ==================== MARKETPLACE FUNCTIONS ====================
-@bot.message_handler(commands=['marketplace', 'mp'])
-def marketplace_command(message):
-    """Browse marketplace listings with inline buttons"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    send_marketplace_to_user(user_id)
-
-def send_marketplace_to_user(user_id, edit_message_id=None):
-    """Send marketplace to user, optionally editing a message"""
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, "User")
-        return
-    
-    # Get active listings
-    listings = execute_query('''
-        SELECT ml.*, u.username as seller_username, u.tier as seller_tier,
-               u.vouch_score as seller_vouch_score
-        FROM marketplace_listings ml
-        JOIN users u ON ml.seller_id = u.user_id
-        WHERE ml.status = 'active'
-        ORDER BY ml.created_at DESC
-        LIMIT 10
     ''')
     
-    if not listings:
-        # No listings - show create listing button
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("➕ Create Listing", callback_data="create_listing"),
-            InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
+    # Swaps history table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS swaps_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            swap_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT,
+            processing_time REAL,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
-        
-        response = "🛒 *CARNAGE MARKETPLACE*\n\nNo active listings found.\n\nBe the first to list a username for sale!"
-        
-        if edit_message_id:
-            try:
-                bot.edit_message_text(
-                    response,
-                    user_id,
-                    edit_message_id,
-                    parse_mode="Markdown",
-                    reply_markup=markup
-                )
-            except:
-                bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
-        else:
-            bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
-        return
+    ''')
     
-    response = "🛒 *CARNAGE MARKETPLACE*\n\n"
-    response += "*Active Listings:*\n\n"
+    conn.commit()
+    conn.close()
     
-    markup = InlineKeyboardMarkup(row_width=2)
+    # Load banned users
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
+    for row in cursor.fetchall():
+        BANNED_USERS.add(row[0])
+    conn.close()
+
+init_database()
+
+# ========== USER DATA FOR FACE SWAP ==========
+user_data = {}
+WAITING_FOR_SOURCE = 1
+WAITING_FOR_TARGET = 2
+
+# ========== USER MANAGEMENT FUNCTIONS ==========
+def register_user(user_id, username, first_name, last_name):
+    """Register or update user in database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
     
-    for listing in listings:
-        # Format price
-        currency_symbol = "💲"
-        if listing["currency"] == "inr":
-            price_text = f"₹{listing['price']}"
-        elif listing["currency"] == "usdt":
-            price_text = f"${listing['price']} USDT"
-        else:
-            price_text = f"{listing['price']} {listing['currency']}"
-        
-        # Add listing type indicator
-        sale_type = listing["sale_type"]
-        type_emoji = "💰" if sale_type == "fixed" else "🎯" if sale_type == "auction" else "🛒"
-        
-        # Add vouch badge
-        vouch_badge = ""
-        if listing["seller_vouch_score"] >= 50:
-            vouch_badge = " 🔒"
-        elif listing["seller_vouch_score"] >= 20:
-            vouch_badge = " ✅"
-        
-        response += (
-            f"{type_emoji} *@{listing['username']}*\n"
-            f"Price: {currency_symbol} {price_text}\n"
-            f"Seller: @{listing['seller_username']}{vouch_badge} ({listing['seller_tier'].upper()})\n"
-            f"Type: {sale_type.upper()}\n"
-            f"ID: `{listing['listing_id']}`\n"
-            f"────────────────────\n"
-        )
-        
-        # Add inline button for this listing
-        button_text = f"🛒 @{listing['username']}"
-        if sale_type == "auction":
-            button_text = f"🎯 @{listing['username']}"
-        elif sale_type == "buy_now":
-            button_text = f"💰 @{listing['username']}"
-        
-        markup.add(InlineKeyboardButton(
-            button_text,
-            callback_data=f"view_listing_{listing['listing_id']}"
-        ))
+    cursor.execute('''
+        INSERT OR REPLACE INTO users 
+        (user_id, username, first_name, last_name, last_active)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (user_id, username, first_name, last_name))
     
-    # Add action buttons
-    markup.add(
-        InlineKeyboardButton("➕ Create Listing", callback_data="create_listing"),
-        InlineKeyboardButton("🔄 Refresh", callback_data="refresh_marketplace")
-    )
+    conn.commit()
+    conn.close()
     
-    if edit_message_id:
-        try:
-            bot.edit_message_text(
-                response,
-                user_id,
-                edit_message_id,
-                parse_mode="Markdown",
-                reply_markup=markup
-            )
-        except Exception as e:
-            print(f"Error editing marketplace message: {e}")
-            bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
+    # Check if new user and notify admin
+    if is_new_user(user_id):
+        notify_admin_new_user(user_id, username, first_name, last_name)
+
+def is_new_user(user_id):
+    """Check if user is new"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (user_id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count == 0
+
+def notify_admin_new_user(user_id, username, first_name, last_name):
+    """Notify admin about new user"""
+    try:
+        total_users = get_total_users()
+        
+        message = f"""👤 *NEW USER REGISTERED*
+
+━━━━━━━━━━━━━━━━━━
+🆔 *User ID:* `{user_id}`
+👤 *Username:* @{username or 'N/A'}
+📛 *Name:* {first_name} {last_name or ''}
+🕐 *Time:* {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+📊 *Total Users:* {total_users}
+━━━━━━━━━━━━━━━━━━
+
+*Admin Commands:*
+/ban {user_id} - Ban user
+/users - List all users
+/botstatus - Check bot status"""
+        
+        bot.send_message(ADMIN_ID, message, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Admin notification error: {e}")
+
+def get_total_users():
+    """Get total registered users"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def get_active_users_count(days=7):
+    """Get active users in last X days"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT COUNT(*) FROM users 
+        WHERE last_active >= datetime('now', '-? days')
+    ''', (days,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def ban_user(user_id):
+    """Ban a user"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+    BANNED_USERS.add(user_id)
+    logger.info(f"User {user_id} banned")
+
+def unban_user(user_id):
+    """Unban a user"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+    if user_id in BANNED_USERS:
+        BANNED_USERS.remove(user_id)
+    logger.info(f"User {user_id} unbanned")
+
+def get_all_users():
+    """Get all users with details"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT user_id, username, first_name, last_name, 
+               join_date, last_active, is_banned, verified,
+               swaps_count, successful_swaps, failed_swaps
+        FROM users 
+        ORDER BY join_date DESC
+    ''')
+    users = cursor.fetchall()
+    conn.close()
+    return users
+
+def update_user_stats(user_id, success=True):
+    """Update user swap statistics"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    if success:
+        cursor.execute('''
+            UPDATE users SET 
+            swaps_count = swaps_count + 1,
+            successful_swaps = successful_swaps + 1,
+            last_active = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        ''', (user_id,))
     else:
-        bot.send_message(user_id, response, parse_mode="Markdown", reply_markup=markup)
+        cursor.execute('''
+            UPDATE users SET 
+            swaps_count = swaps_count + 1,
+            failed_swaps = failed_swaps + 1,
+            last_active = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        ''', (user_id,))
+    
+    conn.commit()
+    conn.close()
 
-@bot.message_handler(commands=['sell'])
-def sell_command(message):
-    """Start selling process - FIXED VERSION"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    
-    # Check if user has joined all channels
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    # Check if user is approved
-    if not is_user_approved(user_id):
-        bot.send_message(user_id, "❌ Your account is not approved yet. Contact admin or use referral system.")
-        return
-    
-    # Clear any existing state
-    if user_id in user_states:
-        del user_states[user_id]
-    
-    user_states[user_id] = {
-        "action": "selling",
-        "step": "get_username"
-    }
-    
-    bot.send_message(
-        user_id,
-        "🛒 *List a Username for Sale*\n\n"
-        "Send the Instagram username you want to sell (without @):\n\n"
-        "Example: `carnage` or `og.name`\n\n"
-        "*Note:* You'll need to provide session ID to verify ownership.",
-        parse_mode="Markdown"
-    )
+def add_swap_history(user_id, status, processing_time):
+    """Add swap to history"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO swaps_history (user_id, status, processing_time)
+        VALUES (?, ?, ?)
+    ''', (user_id, status, processing_time))
+    conn.commit()
+    conn.close()
 
-def create_marketplace_listing(user_id, username, price, currency="inr", 
-                               listing_type="sale", sale_type="fixed", 
-                               description="", auction_duration_hours=24,
-                               buy_now_price=None, min_increment=100):
-    """Create a new marketplace listing"""
-    
-    existing = execute_one(
-        "SELECT listing_id FROM marketplace_listings WHERE seller_id = ? AND username = ? AND status = 'active'",
-        (user_id, username)
-    )
-    if existing:
-        return False, "You already have an active listing for this username"
-    
-    # Check if credits listing (not allowed)
-    if currency == "credits":
-        return False, "Marketplace listings must be in real currency (INR/USDT). Credits not allowed."
-    
-    listing_id = generate_listing_id()
-    
-    # Set auction end time if auction
-    expires_at = None
-    auction_end_time = None
-    if sale_type == "auction":
-        auction_end_time = (datetime.now() + timedelta(hours=auction_duration_hours)).strftime("%Y-%m-%d %H:%M:%S")
-        expires_at = auction_end_time
-    else:
-        expires_at = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-    
-    execute_query('''
-        INSERT INTO marketplace_listings 
-        (listing_id, seller_id, username, price, currency, listing_type, sale_type,
-         description, created_at, expires_at, auction_end_time, min_increment, buy_now_price)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        listing_id, user_id, username, price, currency, listing_type, sale_type,
-        description,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        expires_at,
-        auction_end_time,
-        min_increment,
-        buy_now_price
-    ), commit=True)
-    
-    return True, listing_id
-
-def verify_seller_session(user_id, listing_id, session_id):
-    """Verify seller session for marketplace listing"""
-    listing = execute_one("SELECT username FROM marketplace_listings WHERE listing_id = ?", (listing_id,))
-    if not listing:
-        return False, "Listing not found"
-    
-    username = listing["username"]
-    
-    # Validate session
-    validation = validate_session(session_id, user_id=user_id)
-    if not validation["success"]:
-        return False, f"Invalid session: {validation['error']}"
-    
-    # Verify ownership
-    if validation["username"].lower() != username.lower():
-        return False, f"Session username ({validation['username']}) doesn't match listing username ({username})"
-    
-    # Store encrypted session
-    encrypted_session = encrypt_session(session_id)
-    execute_query(
-        "UPDATE marketplace_listings SET seller_session_encrypted = ?, verified_at = ? WHERE listing_id = ?",
-        (encrypted_session, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), listing_id),
-        commit=True
-    )
-    
-    return True, "Session verified and stored"
-
-# ==================== AUCTION SYSTEM ====================
-@bot.message_handler(commands=['bid'])
-def bid_command(message):
-    """Place a bid on an auction"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    if not is_user_approved(user_id):
-        bot.send_message(user_id, "❌ Your account is not approved yet.")
-        return
-    
+def check_channel_membership(user_id):
+    """Check if user is member of required channel"""
     try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            bot.send_message(user_id, "Usage: /bid <listing_id> <bid_amount>")
-            return
-        
-        listing_id = parts[1]
-        try:
-            bid_amount = float(parts[2])
-        except ValueError:
-            bot.send_message(user_id, "❌ Invalid bid amount. Please enter a number.")
-            return
-        
-        # Check listing
-        listing = execute_one('''
-            SELECT ml.*, u.username as seller_username
-            FROM marketplace_listings ml
-            JOIN users u ON ml.seller_id = u.user_id
-            WHERE ml.listing_id = ? AND ml.status = 'active' AND ml.sale_type = 'auction'
-        ''', (listing_id,))
-        
-        if not listing:
-            bot.send_message(user_id, "❌ Listing not found, not active, or not an auction.")
-            return
-        
-        # Check if auction has ended
-        if listing["auction_end_time"]:
-            end_time = datetime.strptime(listing["auction_end_time"], "%Y-%m-%d %H:%M:%S")
-            if datetime.now() > end_time:
-                bot.send_message(user_id, "❌ Auction has ended.")
-                return
-        
-        # Check if user is the seller
-        if listing["seller_id"] == user_id:
-            bot.send_message(user_id, "❌ You cannot bid on your own listing.")
-            return
-        
-        # Check minimum bid
-        current_bid = listing["current_bid"] or listing["price"]
-        min_next_bid = current_bid + listing["min_increment"]
-        
-        if bid_amount < min_next_bid:
-            bot.send_message(
-                user_id,
-                f"❌ Bid too low. Minimum bid: {min_next_bid} {listing['currency']}"
-            )
-            return
-        
-        # Check buy now price
-        if listing["buy_now_price"] and bid_amount >= listing["buy_now_price"]:
-            # Execute buy now
-            execute_query('''
-                UPDATE marketplace_listings 
-                SET current_bid = ?, highest_bidder = ?, status = 'reserved'
-                WHERE listing_id = ?
-            ''', (bid_amount, user_id, listing_id), commit=True)
-            
-            # Create swap automatically
-            swap_id = generate_swap_id()
-            execute_query('''
-                INSERT INTO marketplace_swaps 
-                (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                swap_id, listing_id, listing["seller_id"], user_id,
-                bid_amount, listing["currency"], "created",
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ), commit=True)
-            
-            bot.send_message(
-                user_id,
-                f"✅ *Buy Now Executed!*\n\n"
-                f"Username: @{listing['username']}\n"
-                f"Price: {bid_amount} {listing['currency']}\n"
-                f"Swap ID: `{swap_id}`\n\n"
-                f"Middleman will contact you shortly.",
-                parse_mode="Markdown"
-            )
-            
-            # Notify seller
-            bot.send_message(
-                listing["seller_id"],
-                f"💰 *Your listing sold via Buy Now!*\n\n"
-                f"Username: @{listing['username']}\n"
-                f"Price: {bid_amount} {listing['currency']}\n"
-                f"Buyer: User {user_id}\n"
-                f"Swap ID: `{swap_id}`\n\n"
-                f"Wait for middleman instructions.",
-                parse_mode="Markdown"
-            )
-            
-            # Notify admin group
-            try:
-                bot.send_message(
-                    ADMIN_GROUP_ID,
-                    f"🛒 *BUY NOW EXECUTED!*\n\n"
-                    f"Listing: `{listing_id}`\n"
-                    f"Username: `{listing['username']}`\n"
-                    f"Seller: {listing['seller_username']}\n"
-                    f"Buyer: {user_id}\n"
-                    f"Price: {bid_amount} {listing['currency']}\n"
-                    f"Swap ID: `{swap_id}`",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-            return
-        
-        # Place regular bid
-        execute_query('''
-            UPDATE marketplace_listings 
-            SET current_bid = ?, highest_bidder = ?, bids = bids + 1
-            WHERE listing_id = ?
-        ''', (bid_amount, user_id, listing_id), commit=True)
-        
-        # Record bid
-        execute_query('''
-            INSERT INTO auction_bids (listing_id, bidder_id, bid_amount, bid_time, is_winning)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (
-            listing_id, user_id, bid_amount,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1
-        ), commit=True)
-        
-        # Update previous winning bid
-        execute_query('''
-            UPDATE auction_bids SET is_winning = 0 
-            WHERE listing_id = ? AND bidder_id != ? AND is_winning = 1
-        ''', (listing_id, user_id), commit=True)
-        
-        bot.send_message(
-            user_id,
-            f"✅ *Bid Placed!*\n\n"
-            f"Username: @{listing['username']}\n"
-            f"Your Bid: {bid_amount} {listing['currency']}\n"
-            f"Current Winning Bid: Yes\n\n"
-            f"*Warning:* Fake bids will result in permanent ban!",
-            parse_mode="Markdown"
-        )
-        
-        # Notify previous highest bidder if any
-        if listing["highest_bidder"] and listing["highest_bidder"] != user_id:
-            try:
-                bot.send_message(
-                    listing["highest_bidder"],
-                    f"⚠️ *You've been outbid!*\n\n"
-                    f"Username: @{listing['username']}\n"
-                    f"New Highest Bid: {bid_amount} {listing['currency']}\n"
-                    f"Your previous bid: {listing['current_bid']} {listing['currency']}",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-        
+        chat_member = bot.get_chat_member(REQUIRED_CHANNEL.replace('@', ''), user_id)
+        return chat_member.status in ['member', 'administrator', 'creator']
     except Exception as e:
-        bot.send_message(user_id, f"❌ Error placing bid: {str(e)}")
-
-@bot.message_handler(commands=['mybids'])
-def mybids_command(message):
-    """View user's active bids"""
-    if message.chat.type != 'private':
-        return
-    
-    user_id = message.from_user.id
-    if not has_joined_all_channels(user_id):
-        send_welcome_with_channels(user_id, message.from_user.first_name)
-        return
-    
-    # Get active bids
-    active_bids = execute_query('''
-        SELECT ml.listing_id, ml.username, ab.bid_amount, ml.currency, 
-               ml.auction_end_time, ml.current_bid, ml.highest_bidder
-        FROM auction_bids ab
-        JOIN marketplace_listings ml ON ab.listing_id = ml.listing_id
-        WHERE ab.bidder_id = ? AND ml.status = 'active' AND ml.sale_type = 'auction'
-        ORDER BY ab.bid_time DESC
-        LIMIT 10
-    ''', (user_id,))
-    
-    if not active_bids:
-        bot.send_message(user_id, "📭 *No active bids*\n\nYou haven't placed any bids on active auctions.")
-        return
-    
-    response = "🎯 *Your Active Bids*\n\n"
-    
-    for bid in active_bids:
-        is_winning = "✅" if bid[6] == user_id else "❌"
-        end_time = bid[4][:16] if bid[4] else "No end time"
-        
-        response += (
-            f"{is_winning} *@{bid[1]}*\n"
-            f"Your Bid: {bid[2]} {bid[3]}\n"
-            f"Current Bid: {bid[5] or bid[2]} {bid[3]}\n"
-            f"Auction Ends: {end_time}\n"
-            f"ID: `{bid[0]}`\n"
-            f"────────────────────\n"
-        )
-    
-    bot.send_message(user_id, response, parse_mode="Markdown")
-
-def check_auction_endings():
-    """Check and process ended auctions"""
-    try:
-        ended_auctions = execute_query('''
-            SELECT ml.*, u.username as seller_username
-            FROM marketplace_listings ml
-            JOIN users u ON ml.seller_id = u.user_id
-            WHERE ml.sale_type = 'auction' AND ml.status = 'active' 
-            AND ml.auction_end_time IS NOT NULL 
-            AND ml.auction_end_time < ?
-        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-        
-        for auction in ended_auctions:
-            if auction["highest_bidder"]:
-                # Auction sold - create swap
-                swap_id = generate_swap_id()
-                execute_query('''
-                    INSERT INTO marketplace_swaps 
-                    (swap_id, listing_id, seller_id, buyer_id, amount, currency, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    swap_id, auction["listing_id"], auction["seller_id"], auction["highest_bidder"],
-                    auction["current_bid"], auction["currency"], "created",
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ), commit=True)
-                
-                # Update listing status
-                execute_query(
-                    "UPDATE marketplace_listings SET status = 'reserved' WHERE listing_id = ?",
-                    (auction["listing_id"],), commit=True
-                )
-                
-                # Notify winner
-                try:
-                    bot.send_message(
-                        auction["highest_bidder"],
-                        f"🎉 *You won the auction!*\n\n"
-                        f"Username: @{auction['username']}\n"
-                        f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
-                        f"Swap ID: `{swap_id}`\n\n"
-                        f"Middleman will contact you shortly.",
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-                
-                # Notify seller
-                try:
-                    bot.send_message(
-                        auction["seller_id"],
-                        f"💰 *Auction Ended - Sold!*\n\n"
-                        f"Username: @{auction['username']}\n"
-                        f"Winning Bid: {auction['current_bid']} {auction['currency']}\n"
-                        f"Buyer: User {auction['highest_bidder']}\n"
-                        f"Swap ID: `{swap_id}`\n\n"
-                        f"Wait for middleman instructions.",
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-                
-                # Notify admin group
-                try:
-                    bot.send_message(
-                        ADMIN_GROUP_ID,
-                        f"🏆 *AUCTION ENDED - SOLD!*\n\n"
-                        f"Listing: `{auction['listing_id']}`\n"
-                        f"Username: `{auction['username']}`\n"
-                        f"Seller: {auction['seller_username']}\n"
-                        f"Buyer: {auction['highest_bidder']}\n"
-                        f"Price: {auction['current_bid']} {auction['currency']}\n"
-                        f"Swap ID: `{swap_id}`",
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-            else:
-                # No bids - mark as expired
-                execute_query(
-                    "UPDATE marketplace_listings SET status = 'expired' WHERE listing_id = ?",
-                    (auction["listing_id"],), commit=True
-                )
-                
-                # Notify seller
-                try:
-                    bot.send_message(
-                        auction["seller_id"],
-                        f"⏰ *Auction Ended - No Bids*\n\n"
-                        f"Username: @{auction['username']}\n"
-                        f"No bids were placed on your auction.\n"
-                        f"You can relist it with /sell",
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-        
-        print(f"✅ Processed {len(ended_auctions)} ended auctions")
-        
-    except Exception as e:
-        print(f"❌ Error checking auction endings: {e}")
-
-# ==================== MIDDLEMAN SYSTEM ====================
-@bot.message_handler(commands=['mm'])
-def mm_command(message):
-    """Add/remove verified middleman (Admin only)"""
-    user_id = message.from_user.id
-    
-    if not is_admin(user_id):
-        bot.reply_to(message, "❌ Admin only command")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            bot.reply_to(message, "Usage: /mm <add/remove> <user_id/@username>")
-            return
-        
-        action = parts[1].lower()
-        target = parts[2]
-        
-        # Parse target (could be @username or user_id)
-        target_id = None
-        if target.startswith('@'):
-            result = execute_one("SELECT user_id FROM users WHERE username = ?", (target[1:],))
-            if result:
-                target_id = result[0]
-            else:
-                bot.reply_to(message, "❌ User not found")
-                return
-        else:
-            try:
-                target_id = int(target)
-            except:
-                bot.reply_to(message, "❌ Invalid user ID")
-                return
-        
-        if action == "add":
-            # Check if already middleman
-            existing = execute_one("SELECT id FROM middlemen WHERE user_id = ?", (target_id,))
-            if existing:
-                bot.reply_to(message, "❌ User is already a middleman")
-                return
-            
-            # Update users table
-            execute_query("UPDATE users SET is_mm = 1 WHERE user_id = ?", (target_id,), commit=True)
-            
-            # Add to middlemen table
-            execute_query('''
-                INSERT INTO middlemen (user_id, verified_by, verified_at, status)
-                VALUES (?, ?, ?, ?)
-            ''', (target_id, user_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "active"), commit=True)
-            
-            # Notify user
-            try:
-                bot.send_message(
-                    target_id,
-                    "🎉 *You are now a Verified Middleman!*\n\n"
-                    "You can now use middleman commands in the admin group.\n"
-                    "Join: @CarnageMMGroup\n\n"
-                    "Use /mmhelp for commands",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-            bot.reply_to(message, f"✅ User {target_id} added as verified middleman")
-            
-        elif action == "remove":
-            # Update users table
-            execute_query("UPDATE users SET is_mm = 0 WHERE user_id = ?", (target_id,), commit=True)
-            
-            # Update middlemen table
-            execute_query("UPDATE middlemen SET status = 'removed' WHERE user_id = ?", (target_id,), commit=True)
-            
-            # Notify user
-            try:
-                bot.send_message(target_id, "⚠️ Your middleman status has been removed.")
-            except:
-                pass
-            
-            bot.reply_to(message, f"✅ User {target_id} removed as middleman")
-            
-        else:
-            bot.reply_to(message, "❌ Invalid action. Use 'add' or 'remove'")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['mmhelp'])
-def mmhelp_command(message):
-    """Show middleman help"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    help_text = """
-🔧 *Middleman Commands (Use in Admin Group Only):*
-
-*Swap Management:*
-`/createswap <listing_id> <buyer_id/@username>` - Create new swap
-`/swapinfo <swap_id>` - View swap details
-`/swaplist` - List all active swaps
-
-*Payment Processing:*
-`/rcvd <swap_id> <payment_method> <proof>` - Mark payment received
-`/release <swap_id>` - Release funds to seller
-`/refund <swap_id> <reason>` - Refund transaction
-
-*Session Collection:*
-`/getsession seller <swap_id>` - Request seller session (DM)
-`/getsession buyer <swap_id>` - Request buyer session (DM)
-
-*Dispute Handling:*
-`/dispute <swap_id> <reason>` - Open dispute
-`/resolve <swap_id> <decision>` - Resolve dispute
-
-*Stats:*
-`/mmstats` - Your middleman statistics
-
-*Rules:*
-• ONE middleman per swap only
-• Sessions are encrypted and deleted after swap
-• Fake bids lead to permanent ban
-• Always verify payment proof
-
-*Examples:*
-• `/createswap LIST12345 @buyer_username`
-• `/rcvd SWAP12345 upi upi_transaction_id`
-• `/release SWAP12345`
-"""
-    
-    bot.reply_to(message, help_text, parse_mode="Markdown")
-
-# ==================== SWAP MANAGEMENT COMMANDS (GROUP ONLY) ====================
-@bot.message_handler(commands=['createswap'], chat_types=['group', 'supergroup'])
-def createswap_command(message):
-    """Create a new marketplace swap (Middleman only)"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            bot.reply_to(message, "Usage: /createswap <listing_id> <buyer_id/@username>")
-            bot.reply_to(message, "Example: /createswap LIST12345 @username\nExample: /createswap LIST12345 123456789")
-            return
-        
-        listing_id = parts[1]
-        buyer_identifier = parts[2]
-        mm_id = user_id  # Current user is the middleman
-        
-        # Get listing details
-        listing = execute_one('''
-            SELECT ml.*, u.username as seller_username, u.user_id as seller_id
-            FROM marketplace_listings ml
-            JOIN users u ON ml.seller_id = u.user_id
-            WHERE ml.listing_id = ? AND ml.status = 'active'
-        ''', (listing_id,))
-        
-        if not listing:
-            bot.reply_to(message, "❌ Listing not found or not active")
-            return
-        
-        # Parse buyer identifier
-        buyer_id = None
-        if isinstance(buyer_identifier, int):
-            buyer_id = buyer_identifier
-        elif isinstance(buyer_identifier, str):
-            if buyer_identifier.startswith('@'):
-                result = execute_one("SELECT user_id FROM users WHERE username = ?", 
-                                   (buyer_identifier[1:],))
-                if result:
-                    buyer_id = result[0]
-                else:
-                    bot.reply_to(message, "❌ Buyer username not found")
-                    return
-            else:
-                try:
-                    buyer_id = int(buyer_identifier)
-                except:
-                    bot.reply_to(message, "❌ Invalid buyer identifier")
-                    return
-        
-        # Check if buyer exists
-        buyer = execute_one("SELECT username FROM users WHERE user_id = ?", (buyer_id,))
-        if not buyer:
-            bot.reply_to(message, "❌ Buyer not found in database")
-            return
-        
-        # Check if buyer is the seller
-        if listing["seller_id"] == buyer_id:
-            bot.reply_to(message, "❌ Buyer cannot be the same as seller")
-            return
-        
-        # Generate swap ID
-        swap_id = generate_swap_id()
-        
-        # Create swap record
-        execute_query('''
-            INSERT INTO marketplace_swaps 
-            (swap_id, listing_id, seller_id, buyer_id, mm_id, amount, currency,
-             status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            swap_id, listing_id, listing["seller_id"], buyer_id, mm_id,
-            listing["price"], listing["currency"],
-            "created",
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ), commit=True)
-        
-        # Update listing status
-        execute_query("UPDATE marketplace_listings SET status = 'reserved' WHERE listing_id = ?",
-                     (listing_id,), commit=True)
-        
-        # Get buyer username
-        buyer_username = buyer[0] or f"User{buyer_id}"
-        
-        # Notify in group
-        group_message = f"""
-🔄 *NEW SWAP CREATED!*
-
-*Swap ID:* `{swap_id}`
-*Listing:* `{listing_id}`
-*Username:* `{listing['username']}`
-*Seller:* {listing['seller_username']} ({listing['seller_id']})
-*Buyer:* {buyer_username} ({buyer_id})
-*Amount:* {listing['price']} {listing['currency']}
-*Middleman:* {message.from_user.username}
-
-*Status:* CREATED ✅
-*Created:* {datetime.now().strftime('%H:%M:%S')}
-
-*Commands:*
-• `/rcvd {swap_id} <payment_method> <proof>` - Mark payment
-• `/swapinfo {swap_id}` - View details
-"""
-        
-        bot.reply_to(message, group_message, parse_mode="Markdown")
-        
-        # Notify buyer in DM
-        try:
-            bot.send_message(
-                buyer_id,
-                f"🛒 *New Swap Created for You!*\n\n"
-                f"Username: `{listing['username']}`\n"
-                f"Price: {listing['price']} {listing['currency']}\n"
-                f"Seller: {listing['seller_username']}\n"
-                f"Middleman: {message.from_user.username}\n"
-                f"Swap ID: `{swap_id}`\n\n"
-                f"Please wait for payment instructions.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-        # Notify seller in DM
-        try:
-            bot.send_message(
-                listing["seller_id"],
-                f"💰 *Your Listing Has a Buyer!*\n\n"
-                f"Username: `{listing['username']}`\n"
-                f"Price: {listing['price']} {listing['currency']}\n"
-                f"Buyer: {buyer_username}\n"
-                f"Middleman: {message.from_user.username}\n"
-                f"Swap ID: `{swap_id}`\n\n"
-                f"Wait for middleman instructions.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['rcvd'], chat_types=['group', 'supergroup'])
-def rcvd_command(message):
-    """Mark payment as received (Middleman only)"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 4:
-            bot.reply_to(message, "Usage: /rcvd <swap_id> <payment_method> <proof>")
-            bot.reply_to(message, "Payment methods: upi, crypto, usdt, bank")
-            bot.reply_to(message, "Example: /rcvd SWAP12345 upi upi_transaction_id")
-            return
-        
-        swap_id = parts[1]
-        payment_method = parts[2].lower()
-        payment_proof = " ".join(parts[3:])
-        
-        # Validate payment method
-        valid_methods = ["upi", "crypto", "usdt", "btc", "eth", "bank"]
-        if payment_method not in valid_methods:
-            bot.reply_to(message, f"❌ Invalid payment method. Use: {', '.join(valid_methods)}")
-            return
-        
-        # Get swap details
-        swap = execute_one('''
-            SELECT ms.*, 
-                   ml.username as listing_username,
-                   u1.username as seller_username,
-                   u2.username as buyer_username
-            FROM marketplace_swaps ms
-            JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-            JOIN users u1 ON ms.seller_id = u1.user_id
-            JOIN users u2 ON ms.buyer_id = u2.user_id
-            WHERE ms.swap_id = ?
-        ''', (swap_id,))
-        
-        if not swap:
-            bot.reply_to(message, "❌ Swap not found")
-            return
-        
-        # Check if current user is the MM for this swap
-        if swap["mm_id"] != user_id:
-            bot.reply_to(message, "❌ You are not the middleman for this swap")
-            return
-        
-        # Check if payment already marked
-        if swap["status"] == "payment_received":
-            bot.reply_to(message, "❌ Payment already marked as received")
-            return
-        
-        # Update swap with payment info
-        execute_query('''
-            UPDATE marketplace_swaps 
-            SET payment_method = ?, payment_proof = ?, status = 'payment_received',
-                payment_received_at = ?
-            WHERE swap_id = ?
-        ''', (payment_method, payment_proof, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), swap_id), commit=True)
-        
-        # Notify in group
-        group_message = f"""
-💰 *PAYMENT RECEIVED!*
-
-*Swap ID:* `{swap_id}`
-*Username:* `{swap['listing_username']}`
-*Buyer:* {swap['buyer_username']}
-*Amount:* {swap['amount']} {swap['currency']}
-*Method:* {payment_method.upper()}
-*Proof:* {payment_proof}
-*Marked by:* {message.from_user.username}
-
-*Next Steps:*
-1. Ask seller for session: `/getsession seller {swap_id}`
-2. Ask buyer for session: `/getsession buyer {swap_id}`
-3. Execute swap when both sessions received
-"""
-        
-        bot.reply_to(message, group_message, parse_mode="Markdown")
-        
-        # Request seller session
-        bot.send_message(
-            swap["seller_id"],
-            f"💰 *Payment Received for @{swap['listing_username']}*\n\n"
-            f"Swap ID: `{swap_id}`\n"
-            f"Buyer: {swap['buyer_username']}\n"
-            f"Amount: {swap['amount']} {swap['currency']}\n"
-            f"Payment Method: {payment_method.upper()}\n\n"
-            f"Please provide Instagram session ID for @{swap['listing_username']}\n\n"
-            f"*Format:* `sessionid=abc123...`\n"
-            f"This session will be used only for this swap.",
-            parse_mode="Markdown"
-        )
-        
-        # Store in pending swaps
-        pending_swaps[swap["seller_id"]] = {
-            "swap_id": swap_id,
-            "role": "seller",
-            "mm_id": user_id,
-            "step": "waiting_session"
-        }
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['getsession'], chat_types=['group', 'supergroup'])
-def getsession_command(message):
-    """Request session from seller or buyer (Middleman only)"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            bot.reply_to(message, "Usage: /getsession <seller/buyer> <swap_id>")
-            return
-        
-        party = parts[1].lower()
-        swap_id = parts[2]
-        
-        if party not in ["seller", "buyer"]:
-            bot.reply_to(message, "❌ Use 'seller' or 'buyer'")
-            return
-        
-        swap = execute_one('''
-            SELECT ms.*, 
-                   ml.username as listing_username,
-                   u1.username as seller_username,
-                   u2.username as buyer_username
-            FROM marketplace_swaps ms
-            JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-            JOIN users u1 ON ms.seller_id = u1.user_id
-            JOIN users u2 ON ms.buyer_id = u2.user_id
-            WHERE ms.swap_id = ?
-        ''', (swap_id,))
-        
-        if not swap:
-            bot.reply_to(message, "❌ Swap not found")
-            return
-        
-        # Check if current user is the MM for this swap
-        if swap["mm_id"] != user_id:
-            bot.reply_to(message, "❌ You are not the middleman for this swap")
-            return
-        
-        if party == "seller":
-            target_id = swap["seller_id"]
-            role = "seller"
-            username = swap["listing_username"]
-            message_text = f"""
-🔐 *Session Required for Swap*
-
-Swap ID: `{swap_id}`
-Username: @{username}
-Amount: {swap['amount']} {swap['currency']}
-
-Please provide Instagram session ID for @{username}
-
-*Format:* `sessionid=abc123...`
-This session will be used only for this swap and deleted afterwards.
-"""
-        else:  # buyer
-            target_id = swap["buyer_id"]
-            role = "buyer"
-            username = swap["listing_username"]
-            message_text = f"""
-🔐 *Session Required for Swap*
-
-Swap ID: `{swap_id}`
-Username: @{username}
-Amount: {swap['amount']} {swap['currency']}
-
-Please provide Instagram session ID for the account where you want to receive @{username}
-
-*Format:* `sessionid=xyz789...`
-This session will be used only for this swap and deleted afterwards.
-"""
-        
-        # Store in pending swaps
-        pending_swaps[target_id] = {
-            "swap_id": swap_id,
-            "role": role,
-            "mm_id": user_id,
-            "step": "waiting_session"
-        }
-        
-        bot.send_message(target_id, message_text, parse_mode="Markdown")
-        bot.reply_to(message, f"✅ Session request sent to {role}.")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-def handle_swap_session(user_id, session_id, role, swap_id):
-    """Handle session received for swap"""
-    swap = execute_one('''
-        SELECT ms.*, 
-               ml.username as listing_username,
-               u1.username as seller_username,
-               u2.username as buyer_username
-        FROM marketplace_swaps ms
-        JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-        JOIN users u1 ON ms.seller_id = u1.user_id
-        JOIN users u2 ON ms.buyer_id = u2.user_id
-        WHERE ms.swap_id = ?
-    ''', (swap_id,))
-    
-    if not swap:
-        return False, "Swap not found"
-    
-    # Validate session
-    validation = validate_session(session_id)
-    if not validation["success"]:
-        return False, f"Invalid session: {validation['error']}"
-    
-    # For seller, verify they own the claimed username
-    if role == "seller":
-        if validation["username"].lower() != swap["listing_username"].lower():
-            return False, f"Session username ({validation['username']}) doesn't match listing username ({swap['listing_username']})"
-    
-    # Store encrypted session in database
-    encrypted_session = encrypt_session(session_id)
-    
-    if role == "seller":
-        execute_query(
-            "UPDATE marketplace_swaps SET seller_session_encrypted = ? WHERE swap_id = ?",
-            (encrypted_session, swap_id),
-            commit=True
-        )
-    else:  # buyer
-        execute_query(
-            "UPDATE marketplace_swaps SET buyer_session_encrypted = ? WHERE swap_id = ?",
-            (encrypted_session, swap_id),
-            commit=True
-        )
-    
-    # Check if both sessions received
-    updated_swap = execute_one(
-        "SELECT seller_session_encrypted, buyer_session_encrypted FROM marketplace_swaps WHERE swap_id = ?",
-        (swap_id,)
-    )
-    
-    if updated_swap and updated_swap[0] and updated_swap[1]:
-        # Both sessions received, decrypt and execute swap
-        seller_session = decrypt_session(updated_swap[0])
-        buyer_session = decrypt_session(updated_swap[1])
-        
-        # Execute swap
-        success = execute_marketplace_swap(swap_id, seller_session, buyer_session)
-        
-        if success:
-            # Update swap status
-            execute_query(
-                "UPDATE marketplace_swaps SET status = 'swap_completed', swap_completed_at = ? WHERE swap_id = ?",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), swap_id),
-                commit=True
-            )
-            
-            # Update listing status
-            execute_query(
-                "UPDATE marketplace_listings SET status = 'sold' WHERE listing_id = ?",
-                (swap["listing_id"],),
-                commit=True
-            )
-            
-            # Notify in admin group
-            try:
-                bot.send_message(
-                    ADMIN_GROUP_ID,
-                    f"✅ *SWAP EXECUTED SUCCESSFULLY!*\n\n"
-                    f"Swap ID: `{swap_id}`\n"
-                    f"Username: `{swap['listing_username']}`\n"
-                    f"Seller: {swap['seller_username']}\n"
-                    f"Buyer: {swap['buyer_username']}\n\n"
-                    f"*Release funds with:*\n"
-                    f"`/release {swap_id}`",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-            # Request vouches
-            request_vouch(swap_id, swap["seller_id"], swap["buyer_id"])
-            
-            return True, "Swap executed successfully! Funds ready for release. Vouch requested from both parties."
-        else:
-            return False, "Swap execution failed"
-    
-    return True, f"{role.capitalize()} session stored. Waiting for other party."
-
-def execute_marketplace_swap(swap_id, seller_session, buyer_session):
-    """Execute swap between seller and buyer accounts"""
-    try:
-        # Generate random username for seller's account
-        random_username = generate_random_username()
-        
-        # Change seller's username to random
-        csrf_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-        result1 = change_username_account1(None, seller_session, csrf_token, random_username)
-        if not result1:
-            return False
-        
-        # Change buyer's username to target username
-        swap = execute_one('''
-            SELECT ml.username as listing_username
-            FROM marketplace_swaps ms
-            JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-            WHERE ms.swap_id = ?
-        ''', (swap_id,))
-        
-        if not swap:
-            return False
-        
-        target_username = swap["listing_username"]
-        result2 = change_username_account2(None, buyer_session, csrf_token, target_username)
-        
-        return result2
-        
-    except Exception as e:
-        print(f"Swap execution error: {e}")
+        logger.error(f"Channel check error: {e}")
         return False
 
-@bot.message_handler(commands=['release'], chat_types=['group', 'supergroup'])
-def release_command(message):
-    """Release funds to seller (Middleman only)"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /release <swap_id>")
-            return
-        
-        swap_id = parts[1]
-        swap = execute_one('''
-            SELECT ms.*, 
-                   ml.username as listing_username,
-                   u1.username as seller_username
-            FROM marketplace_swaps ms
-            JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-            JOIN users u1 ON ms.seller_id = u1.user_id
-            WHERE ms.swap_id = ?
-        ''', (swap_id,))
-        
-        if not swap:
-            bot.reply_to(message, "❌ Swap not found")
-            return
-        
-        # Check if current user is the MM for this swap
-        if swap["mm_id"] != user_id:
-            bot.reply_to(message, "❌ You are not the middleman for this swap")
-            return
-        
-        # Check if swap was completed
-        if swap["status"] != "swap_completed":
-            bot.reply_to(message, f"❌ Swap status is {swap['status']}. Must be 'swap_completed' to release funds.")
-            return
-        
-        # Update status
-        execute_query(
-            "UPDATE marketplace_swaps SET status = 'released', released_at = ? WHERE swap_id = ?",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), swap_id),
-            commit=True
-        )
-        
-        # Notify seller
-        try:
-            bot.send_message(
-                swap["seller_id"],
-                f"💰 *Funds Released!*\n\n"
-                f"Swap ID: `{swap_id}`\n"
-                f"Username: `{swap['listing_username']}`\n"
-                f"Amount: {swap['amount']} {swap['currency']}\n\n"
-                f"Contact middleman for payment details.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-        bot.reply_to(message, f"✅ Funds released for swap {swap_id}. Notify seller about payment.")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
+def verify_user(user_id):
+    """Verify user and update database"""
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET verified = 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
 
-@bot.message_handler(commands=['refund'], chat_types=['group', 'supergroup'])
-def refund_command(message):
-    """Refund transaction (Middleman only)"""
-    user_id = message.from_user.id
-    
-    if not is_verified_mm(user_id):
-        bot.reply_to(message, "❌ Verified middlemen only")
-        return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            bot.reply_to(message, "Usage: /refund <swap_id> <reason>")
-            return
-        
-        swap_id = parts[1]
-        reason = " ".join(parts[2:])
-        
-        swap = execute_one('''
-            SELECT ms.*, 
-                   ml.username as listing_username,
-                   u2.username as buyer_username
-            FROM marketplace_swaps ms
-            JOIN marketplace_listings ml ON ms.listing_id = ml.listing_id
-            JOIN users u2 ON ms.buyer_id = u2.user_id
-            WHERE ms.swap_id = ?
-        ''', (swap_id,))
-        
-        if not swap:
-            bot.reply_to(message, "❌ Swap not found")
-            return
-        
-        # Check if current user is the MM for this swap
-        if swap["mm_id"] != user_id:
-            bot.reply_to(message, "❌ You are not the middleman for this swap")
-            return
-        
-        # Update status
-        execute_query(
-            "UPDATE marketplace_swaps SET status = 'refunded', refunded_at = ?, dispute_reason = ? WHERE swap_id = ?",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason, swap_id),
-            commit=True
-        )
-        
-        # Update listing status back to active
-        execute_query(
-            "UPDATE marketplace_listings SET status = 'active' WHERE listing_id = ?",
-            (swap["listing_id"],),
-            commit=True
-        )
-        
-        # Notify buyer
-        try:
-            bot.send_message(
-                swap["buyer_id"],
-                f"🔄 *Refund Issued*\n\n"
-                f"Swap ID: `{swap_id}`\n"
-                f"Username: `{swap['listing_username']}`\n"
-                f"Amount: {swap['amount']} {swap['currency']}\n"
-                f"Reason: {reason}\n\n"
-                f"Your payment has been refunded.\n"
-                f"Contact middleman for refund details.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-        
-        bot.reply_to(message, f"✅ Swap {swap_id} refunded. Reason: {reason}")
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-# ==================== MESSAGE HANDLERS ====================
-def handle_tutorial_response(chat_id, text):
-    """Handle tutorial responses"""
-    pass
-
-@bot.message_handler(func=lambda message: True)
-def handle_all_messages(message):
-    """Handle all text messages"""
-    user_id = message.chat.id
-    text = message.text
-    
-    # Update user activity
-    update_user_active(user_id)
-    
-    # Check if user is in selling state
-    if user_id in user_states and user_states[user_id]["action"] == "selling":
-        handle_selling_state(user_id, text)
-        return
-    
-    # Check if user is in pending swap state
-    if user_id in pending_swaps:
-        handle_pending_swap(user_id, text)
-        return
-    
-    # Check if user is in vouch state
-    if user_id in vouch_requests and vouch_requests[user_id]["step"] == "waiting_comment":
-        handle_vouch_comment(user_id, text)
-        return
-    
-    # If it's a command, let command handlers process it
-    if text.startswith('/'):
-        return
-    
-    # Handle private messages
-    if message.chat.type == 'private':
-        handle_private_messages(message)
-
-def handle_selling_state(user_id, text):
-    """Handle user in selling state - FIXED VERSION"""
-    if user_id not in user_states or user_states[user_id]["action"] != "selling":
-        return
-    
-    state = user_states[user_id]
-    
-    if state["step"] == "get_username":
-        username = text.strip().lower().replace('@', '')
-        
-        # Validate username format
-        if not re.match(r'^[a-zA-Z0-9._]{1,30}$', username):
-            bot.send_message(user_id, "❌ Invalid username format. Use only letters, numbers, dots, and underscores.")
-            return
-        
-        # Check if username is already listed
-        existing = execute_one(
-            "SELECT listing_id FROM marketplace_listings WHERE username = ? AND status = 'active'",
-            (username,)
-        )
-        if existing:
-            bot.send_message(user_id, f"❌ @{username} is already listed in marketplace")
-            del user_states[user_id]
-            return
-        
-        state["username"] = username
-        state["step"] = "get_sale_type"
-        
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("💰 Fixed Price", callback_data="sale_type_fixed"),
-            InlineKeyboardButton("🎯 Auction", callback_data="sale_type_auction"),
-            InlineKeyboardButton("🛒 Buy Now + Auction", callback_data="sale_type_buy_now")
-        )
-        
-        bot.send_message(
-            user_id,
-            f"🎯 *Select Sale Type for @{username}*\n\n"
-            f"• *Fixed Price:* Set a fixed price\n"
-            f"• *Auction:* Accept bids for 24 hours\n"
-            f"• *Buy Now + Auction:* Set buy now price + accept bids\n\n"
-            f"Choose an option:",
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
-    
-    elif state["step"] == "get_price":
-        try:
-            price = float(text.strip())
-            
-            # Validate minimum price
-            min_prices = {
-                "inr": 1000,
-                "usdt": 10
-            }
-            
-            currency = state.get("currency", "inr")
-            if price < min_prices.get(currency, 1000):
-                bot.send_message(user_id, f"❌ Minimum price for {currency} is {min_prices[currency]}")
-                return
-            
-            state["price"] = price
-            
-            if state.get("sale_type") == "auction":
-                state["step"] = "get_min_increment"
-                bot.send_message(
-                    user_id,
-                    f"📈 *Set Minimum Bid Increment*\n\n"
-                    f"Current starting price: {price} {currency}\n"
-                    f"Enter minimum bid increment amount:\n\n"
-                    f"Example: `100` (means bids must increase by at least 100)",
-                    parse_mode="Markdown"
-                )
-            elif state.get("sale_type") == "buy_now":
-                state["step"] = "get_buy_now_price"
-                bot.send_message(
-                    user_id,
-                    f"💰 *Set Buy Now Price*\n\n"
-                    f"Starting price: {price} {currency}\n"
-                    f"Enter buy now price (users can buy immediately at this price):\n\n"
-                    f"Must be higher than starting price.",
-                    parse_mode="Markdown"
-                )
-            else:
-                state["step"] = "get_description"
-                bot.send_message(
-                    user_id,
-                    f"📝 *Add Description for @{state['username']}*\n\n"
-                    f"Price: {price} {currency}\n\n"
-                    f"Enter description (optional):\n"
-                    f"Or type 'skip' to skip",
-                    parse_mode="Markdown"
-                )
-            
-        except ValueError:
-            bot.send_message(user_id, "❌ Please enter valid amount")
-    
-    elif state["step"] == "get_min_increment":
-        try:
-            min_increment = float(text.strip())
-            if min_increment < 10:
-                bot.send_message(user_id, "❌ Minimum increment must be at least 10")
-                return
-            
-            state["min_increment"] = min_increment
-            state["step"] = "get_description"
-            
-            bot.send_message(
-                user_id,
-                f"📝 *Add Description for @{state['username']}*\n\n"
-                f"Starting Price: {state['price']} {state['currency']}\n"
-                f"Min Increment: {min_increment} {state['currency']}\n\n"
-                f"Enter description (optional):\n"
-                f"Or type 'skip' to skip",
-                parse_mode="Markdown"
-            )
-            
-        except ValueError:
-            bot.send_message(user_id, "❌ Please enter valid amount")
-    
-    elif state["step"] == "get_buy_now_price":
-        try:
-            buy_now_price = float(text.strip())
-            if buy_now_price <= state["price"]:
-                bot.send_message(user_id, f"❌ Buy now price must be higher than starting price ({state['price']})")
-                return
-            
-            state["buy_now_price"] = buy_now_price
-            state["step"] = "get_min_increment"
-            
-            bot.send_message(
-                user_id,
-                f"📈 *Set Minimum Bid Increment*\n\n"
-                f"Starting price: {state['price']} {state['currency']}\n"
-                f"Buy now price: {buy_now_price} {state['currency']}\n\n"
-                f"Enter minimum bid increment amount:",
-                parse_mode="Markdown"
-            )
-            
-        except ValueError:
-            bot.send_message(user_id, "❌ Please enter valid amount")
-    
-    elif state["step"] == "get_description":
-        description = text if text.lower() != "skip" else ""
-        state["description"] = description
-        
-        # Create listing
-        buy_now_price = state.get("buy_now_price")
-        min_increment = state.get("min_increment", 100)
-        sale_type = state.get("sale_type", "fixed")
-        
-        success, listing_id = create_marketplace_listing(
-            user_id,
-            state["username"],
-            state["price"],
-            state["currency"],
-            "sale",
-            sale_type,
-            state["description"],
-            24,  # auction duration hours
-            buy_now_price,
-            min_increment
-        )
-        
-        if not success:
-            bot.send_message(user_id, f"❌ Failed to create listing: {listing_id}")
-            del user_states[user_id]
-            return
-        
-        state["listing_id"] = listing_id
-        
-        # Ask for session to verify ownership
-        bot.send_message(
-            user_id,
-            f"🔐 *Verify Ownership*\n\n"
-            f"To list @{state['username']} for sale, you need to verify ownership.\n\n"
-            f"Please provide Instagram session ID for @{state['username']}:\n\n"
-            f"*Format:* `sessionid=abc123...`\n"
-            f"This session will be encrypted and stored securely.",
-            parse_mode="Markdown"
-        )
-        
-        state["step"] = "get_session"
-    
-    elif state["step"] == "get_session":
-        session_id = text.strip()
-        
-        # Verify session with the created listing
-        success, result = verify_seller_session(user_id, state["listing_id"], session_id)
-        
-        if success:
-            # Store session
-            save_session_to_db(user_id, "marketplace_seller", session_id, state["listing_id"])
-            
-            # Format listing details
-            currency_symbol = "💲"
-            if state["currency"] == "inr":
-                price_text = f"₹{state['price']}"
-            elif state["currency"] == "usdt":
-                price_text = f"${state['price']} USDT"
-            
-            sale_type_text = ""
-            if state.get("sale_type") == "auction":
-                sale_type_text = f"\nAuction Duration: 24 hours\nMin Increment: {state.get('min_increment', 100)} {state['currency']}"
-            elif state.get("sale_type") == "buy_now":
-                sale_type_text = f"\nBuy Now Price: {state['buy_now_price']} {state['currency']}\nAuction Duration: 24 hours\nMin Increment: {state.get('min_increment', 100)} {state['currency']}"
-            
-            bot.send_message(
-                user_id,
-                f"✅ *Listing Created Successfully!*\n\n"
-                f"Username: @{state['username']}\n"
-                f"Price: {currency_symbol} {price_text}\n"
-                f"Type: {state.get('sale_type', 'fixed').upper()}{sale_type_text}\n"
-                f"Listing ID: `{state['listing_id']}`\n\n"
-                f"*Your listing is now active in marketplace!*\n"
-                f"View it with /marketplace\n\n"
-                f"*Note:* When someone buys, middleman will contact you for session.",
-                parse_mode="Markdown"
-            )
-            
-            # Post to marketplace channel
-            try:
-                type_emoji = "💰" if state.get("sale_type") == "fixed" else "🎯" if state.get("sale_type") == "auction" else "🛒"
-                
-                bot.send_message(
-                    MARKETPLACE_CHANNEL_ID,
-                    f"🆕 *NEW LISTING!*\n\n"
-                    f"{type_emoji} Username: `@{state['username']}`\n"
-                    f"Price: {currency_symbol} {price_text}\n"
-                    f"Type: {state.get('sale_type', 'fixed').upper()}{sale_type_text}\n"
-                    f"Seller: Verified ✅\n"
-                    f"Listing ID: `{state['listing_id']}`\n\n"
-                    f"To buy, contact middleman with listing ID.",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-        else:
-            bot.send_message(user_id, f"❌ Verification failed: {result}\n\nPlease send valid session ID:")
-            return
-        
-        del user_states[user_id]
-
-def handle_pending_swap(user_id, text):
-    """Handle pending swap session collection"""
-    if user_id not in pending_swaps:
-        return
-    
-    swap_data = pending_swaps[user_id]
-    swap_id = swap_data["swap_id"]
-    role = swap_data["role"]
-    
-    session_id = text.strip()
-    
-    # Handle session
-    success, result = handle_swap_session(user_id, session_id, role, swap_id)
-    
-    if success:
-        bot.send_message(user_id, f"✅ {result}", parse_mode="Markdown")
-    else:
-        bot.send_message(user_id, f"❌ {result}\n\nPlease send valid session ID:", parse_mode="Markup")
-        return
-    
-    # Remove from pending if not waiting for other party
-    if "Waiting for other party" not in result:
-        del pending_swaps[user_id]
-
-def handle_vouch_comment(user_id, text):
-    """Handle vouch comment"""
-    if user_id not in vouch_requests:
-        return
-    
-    vouch_data = vouch_requests[user_id]
-    comment = text.strip()
-    
-    # Process vouch with comment
-    success = process_vouch(user_id, vouch_data["swap_id"], vouch_data["vouch_for"], vouch_data["vouch_type"], comment)
-    
-    if success:
-        bot.send_message(user_id, "✅ Vouch submitted successfully! Thank you!")
-    else:
-        bot.send_message(user_id, "❌ Error submitting vouch")
-    
-    del vouch_requests[user_id]
-
-# ==================== CALLBACK HANDLERS ====================
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    """Handle callback queries"""
-    user_id = call.from_user.id
-    data = call.data
-    
-    try:
-        if data == "check_channels":
-            channel_results = check_all_channels(user_id)
-            
-            if all(channel_results.values()):
-                bot.answer_callback_query(call.id, "✅ Verified! You've joined all channels!")
-                bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=call.message.message_id,
-                    text="🎉 *Channel Verification Successful!*\n\nYou've joined all required channels! ✅\n\nNow you can use the bot features.\n\nSend /start again to begin.",
-                    parse_mode="Markdown"
-                )
-                
-                execute_query("UPDATE users SET channels_joined = 1 WHERE user_id = ?", (user_id,), commit=True)
-                
-            else:
-                missing_channels = []
-                for channel_type, joined in channel_results.items():
-                    if not joined:
-                        missing_channels.append(CHANNELS[channel_type]['name'])
-                
-                bot.answer_callback_query(
-                    call.id, 
-                    f"❌ You need to join: {', '.join(missing_channels)}",
-                    show_alert=True
-                )
-        
-        elif data == "refresh_marketplace":
-            try:
-                # Use a safer approach - answer first, then refresh
-                bot.answer_callback_query(call.id, "Refreshing marketplace...")
-                # Don't delete the message, just edit it
-                send_marketplace_to_user(call.from_user.id, call.message.message_id)
-            except Exception as e:
-                print(f"Error refreshing marketplace: {e}")
-                bot.answer_callback_query(call.id, "Error refreshing, please try /marketplace again")
-            
-        elif data == "create_listing":
-            try:
-                bot.answer_callback_query(call.id, "Starting listing creation...")
-                # Start selling process in a new message
-                sell_command(call.message)
-            except Exception as e:
-                print(f"Error creating listing: {e}")
-                bot.answer_callback_query(call.id, "Error starting listing creation")
-        
-        elif data.startswith("sale_type_"):
-            sale_type = data.split("_")[2]
-            
-            if user_id not in user_states or user_states[user_id]["action"] != "selling":
-                bot.answer_callback_query(call.id, "❌ Invalid state", show_alert=True)
-                return
-            
-            user_states[user_id]["sale_type"] = sale_type
-            user_states[user_id]["step"] = "get_currency"
-            
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("🇮🇳 Indian Rupees (INR)", callback_data="currency_inr"),
-                InlineKeyboardButton("💲 USDT Crypto", callback_data="currency_usdt")
-            )
-            
-            bot.edit_message_text(
-                f"💱 *Select Currency*\n\n"
-                f"Sale Type: {sale_type.upper()}\n"
-                f"Username: @{user_states[user_id]['username']}\n\n"
-                f"Choose currency:",
-                call.message.chat.id,
-                call.message.message_id,
-                parse_mode="Markdown",
-                reply_markup=markup
-            )
-            
-        elif data.startswith("currency_"):
-            currency = data.split("_")[1]
-            
-            if user_id not in user_states or user_states[user_id]["action"] != "selling":
-                bot.answer_callback_query(call.id, "❌ Invalid state", show_alert=True)
-                return
-            
-            user_states[user_id]["currency"] = currency
-            user_states[user_id]["step"] = "get_price"
-            
-            # Show minimum prices
-            min_prices = {
-                "inr": "₹1000",
-                "usdt": "$10 USDT"
-            }
-            
-            bot.edit_message_text(
-                f"💰 *Set Price for @{user_states[user_id]['username']}*\n\n"
-                f"Sale Type: {user_states[user_id]['sale_type'].upper()}\n"
-                f"Currency: {currency.upper()}\n"
-                f"Minimum Price: {min_prices.get(currency, '₹1000')}\n\n"
-                f"Enter price amount:\n\n"
-                f"Example: `5000`",
-                call.message.chat.id,
-                call.message.message_id,
-                parse_mode="Markdown"
-            )
-            
-        elif data.startswith("view_listing_"):
-            listing_id = data.split("_")[2]
-            listing = execute_one('''
-                SELECT ml.*, u.username as seller_username, u.tier as seller_tier,
-                       u.vouch_score as seller_vouch_score, u.positive_vouches,
-                       u.negative_vouches
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.listing_id = ?
-            ''', (listing_id,))
-            
-            if listing:
-                # Format price
-                currency_symbol = "💲"
-                if listing["currency"] == "inr":
-                    price_text = f"₹{listing['price']}"
-                elif listing["currency"] == "usdt":
-                    price_text = f"${listing['price']} USDT"
-                else:
-                    price_text = f"{listing['price']} {listing['currency']}"
-                
-                # Format vouch info
-                vouch_info = ""
-                if listing["seller_vouch_score"] > 0:
-                    vouch_info = f"\n*Vouch Score:* {listing['seller_vouch_score']} ({listing['positive_vouches']}+/{listing['negative_vouches']}-)"
-                
-                # Format sale type info
-                sale_type_info = ""
-                if listing["sale_type"] == "auction":
-                    current_bid = listing["current_bid"] or listing["price"]
-                    bids = listing["bids"] or 0
-                    end_time = listing["auction_end_time"][:16] if listing["auction_end_time"] else "No end time"
-                    sale_type_info = f"""
-*Auction Details:*
-• Current Bid: {current_bid} {listing['currency']}
-• Bids: {bids}
-• Ends: {end_time}
-• Min Increment: {listing['min_increment']} {listing['currency']}
-"""
-                    if listing["buy_now_price"]:
-                        sale_type_info += f"• Buy Now: {listing['buy_now_price']} {listing['currency']}"
-                
-                markup = InlineKeyboardMarkup(row_width=2)
-                
-                # Add different buttons based on sale type
-                if listing["sale_type"] == "fixed":
-                    markup.add(
-                        InlineKeyboardButton("🛒 Buy Now", callback_data=f"buy_fixed_{listing_id}"),
-                        InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}")
-                    )
-                elif listing["sale_type"] == "auction":
-                    markup.add(
-                        InlineKeyboardButton("🎯 Place Bid", callback_data=f"bid_auction_{listing_id}"),
-                        InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}")
-                    )
-                    if listing["buy_now_price"]:
-                        markup.add(InlineKeyboardButton("💰 Buy Now", callback_data=f"buy_now_{listing_id}"))
-                elif listing["sale_type"] == "buy_now":
-                    markup.add(
-                        InlineKeyboardButton("💰 Buy Now", callback_data=f"buy_now_{listing_id}"),
-                        InlineKeyboardButton("🎯 Place Bid", callback_data=f"bid_auction_{listing_id}"),
-                        InlineKeyboardButton("📞 Contact Seller", url=f"https://t.me/{listing['seller_username']}" if listing['seller_username'] else f"https://t.me/{BOT_USERNAME}")
-                    )
-                
-                markup.add(InlineKeyboardButton("🔙 Back to Marketplace", callback_data="refresh_marketplace"))
-                
-                verified_text = "✅ Verified" if listing["seller_session_encrypted"] else "❌ Not Verified"
-                
-                response = (
-                    f"🔍 *Listing Details*\n\n"
-                    f"*Username:* `{listing['username']}`\n"
-                    f"*Price:* {currency_symbol} {price_text}\n"
-                    f"*Seller:* @{listing['seller_username'] or 'User'}\n"
-                    f"*Seller Tier:* {listing['seller_tier'].upper()}\n"
-                    f"*Verification:* {verified_text}{vouch_info}\n"
-                    f"*Sale Type:* {listing['sale_type'].upper()}\n"
-                    f"*Status:* {listing['status'].capitalize()}\n"
-                    f"{sale_type_info}\n\n"
-                    f"*Description:* {listing['description'] or 'No description'}\n\n"
-                    f"*Listing ID:* `{listing_id}`\n"
-                    f"*Created:* {listing['created_at'][:10]}\n"
-                    f"*Expires:* {listing['expires_at'][:10]}"
-                )
-                
-                bot.edit_message_text(
-                    response,
-                    call.message.chat.id,
-                    call.message.message_id,
-                    parse_mode="Markdown",
-                    reply_markup=markup
-                )
-            
-        elif data.startswith("buy_fixed_"):
-            listing_id = data.split("_")[2]
-            listing = execute_one('''
-                SELECT ml.*, u.username as seller_username, u.user_id as seller_id
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.listing_id = ?
-            ''', (listing_id,))
-            
-            if not listing:
-                bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
-                return
-            
-            # Check if user is the seller
-            if listing["seller_id"] == user_id:
-                bot.answer_callback_query(call.id, "You cannot buy your own listing", show_alert=True)
-                return
-            
-            # Send contact message to buyer
-            bot.send_message(
-                user_id,
-                f"🛒 *Purchase @{listing['username']}*\n\n"
-                f"*Price:* {listing['price']} {listing['currency']}\n"
-                f"*Seller:* @{listing['seller_username'] or 'User'}\n\n"
-                f"*To purchase:*\n"
-                f"1. Contact a middleman in the admin group\n"
-                f"2. Provide Listing ID: `{listing_id}`\n"
-                f"3. Middleman will create a swap for you\n"
-                f"4. Make payment as instructed\n"
-                f"5. Provide session when asked\n\n"
-                f"*Admin Group:* @CarnageMMGroup\n"
-                f"*Listing ID:* `{listing_id}`",
-                parse_mode="Markdown"
-            )
-            
-            # Also notify the seller
-            try:
-                buyer_info = call.from_user.username or f"User {user_id}"
-                bot.send_message(
-                    listing["seller_id"],
-                    f"🛒 *Someone wants to buy your listing!*\n\n"
-                    f"Username: @{listing['username']}\n"
-                    f"Price: {listing['price']} {listing['currency']}\n"
-                    f"Interested Buyer: @{buyer_info}\n\n"
-                    f"Buyer has been instructed to contact middleman.\n"
-                    f"Listing ID: `{listing_id}`",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-            
-            bot.answer_callback_query(call.id, "Instructions sent! Check your messages.")
-        
-        elif data.startswith("bid_auction_"):
-            listing_id = data.split("_")[2]
-            
-            if user_id in bidding_sessions:
-                del bidding_sessions[user_id]
-            
-            bidding_sessions[user_id] = {
-                "listing_id": listing_id,
-                "step": "get_bid"
-            }
-            
-            listing = execute_one('''
-                SELECT ml.*, u.username as seller_username
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.listing_id = ?
-            ''', (listing_id,))
-            
-            if listing:
-                current_bid = listing["current_bid"] or listing["price"]
-                min_next_bid = current_bid + listing["min_increment"]
-                
-                bot.send_message(
-                    user_id,
-                    f"🎯 *Place Bid on @{listing['username']}*\n\n"
-                    f"Current Bid: {current_bid} {listing['currency']}\n"
-                    f"Minimum Next Bid: {min_next_bid} {listing['currency']}\n"
-                    f"Your Bid Must Be: ≥ {min_next_bid} {listing['currency']}\n\n"
-                    f"*Enter your bid amount:*\n\n"
-                    f"*WARNING:* Fake bids will result in PERMANENT BAN!",
-                    parse_mode="Markdown"
-                )
-            
-            bot.answer_callback_query(call.id)
-        
-        elif data.startswith("buy_now_"):
-            listing_id = data.split("_")[2]
-            listing = execute_one('''
-                SELECT ml.*, u.username as seller_username, u.user_id as seller_id
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.listing_id = ?
-            ''', (listing_id,))
-            
-            if not listing:
-                bot.answer_callback_query(call.id, "Listing not found", show_alert=True)
-                return
-            
-            # Check if user is the seller
-            if listing["seller_id"] == user_id:
-                bot.answer_callback_query(call.id, "You cannot buy your own listing", show_alert=True)
-                return
-            
-            if not listing["buy_now_price"]:
-                bot.answer_callback_query(call.id, "Buy Now not available for this listing", show_alert=True)
-                return
-            
-            # Confirm buy now
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("✅ Confirm Buy Now", callback_data=f"confirm_buy_now_{listing_id}"),
-                InlineKeyboardButton("❌ Cancel", callback_data=f"view_listing_{listing_id}")
-            )
-            
-            bot.edit_message_text(
-                f"💰 *Confirm Buy Now*\n\n"
-                f"Username: @{listing['username']}\n"
-                f"Buy Now Price: {listing['buy_now_price']} {listing['currency']}\n"
-                f"Seller: @{listing['seller_username'] or 'User'}\n\n"
-                f"*Are you sure you want to buy now?*\n\n"
-                f"This will create a swap immediately and middleman will contact you.",
-                call.message.chat.id,
-                call.message.message_id,
-                parse_mode="Markdown",
-                reply_markup=markup
-            )
-            
-            bot.answer_callback_query(call.id)
-        
-        elif data.startswith("confirm_buy_now_"):
-            listing_id = data.split("_")[3]
-            
-            # Call the bid function with buy now price
-            listing = execute_one('''
-                SELECT ml.*, u.username as seller_username
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                WHERE ml.listing_id = ?
-            ''', (listing_id,))
-            
-            if listing and listing["buy_now_price"]:
-                # Simulate bid command
-                message_text = f"/bid {listing_id} {listing['buy_now_price']}"
-                bid_command(type('Message', (), {'chat': type('Chat', (), {'id': user_id, 'type': 'private'}), 'text': message_text, 'from_user': call.from_user})())
-            
-            bot.answer_callback_query(call.id)
-        
-        elif data.startswith("vouch_"):
-            parts = data.split("_")
-            if len(parts) < 4:
-                bot.answer_callback_query(call.id, "Invalid vouch data", show_alert=True)
-                return
-            
-            vouch_type = parts[1]
-            swap_id = parts[2]
-            vouch_for = int(parts[3])
-            
-            if vouch_type == "skip":
-                # Skip vouch
-                if user_id in vouch_requests:
-                    del vouch_requests[user_id]
-                bot.answer_callback_query(call.id, "Vouch skipped")
-                bot.edit_message_text(
-                    "⏩ Vouch skipped. Thank you for your transaction!",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
-                return
-            
-            # Store vouch request
-            vouch_requests[user_id] = {
-                "swap_id": swap_id,
-                "vouch_for": vouch_for,
-                "vouch_type": vouch_type,
-                "step": "waiting_comment"
-            }
-            
-            # Ask for comment
-            bot.edit_message_text(
-                f"💬 *Add a comment for your {vouch_type} vouch*\n\n"
-                f"Enter your comment (optional):\n"
-                f"Or type 'skip' to skip comment",
-                call.message.chat.id,
-                call.message.message_id,
-                parse_mode="Markdown"
-            )
-            
-            bot.answer_callback_query(call.id)
-        
-        # NEW: Username Claimer Callbacks
-        elif data.startswith("claim_username_"):
-            target_username = data.split("_")[2]
-            claim_username(call.message.chat.id, target_username)
-            bot.answer_callback_query(call.id)
-            
-        elif data == "check_another_username":
-            if call.message.chat.id in claimer_sessions:
-                del claimer_sessions[call.message.chat.id]
-            start_username_check(call.message.chat.id)
-            bot.answer_callback_query(call.id)
-            
-        elif data.startswith("check_similar_"):
-            username = data.split("_")[2]
-            # Generate similar usernames
-            similar_names = []
-            for i in range(1, 10):
-                similar_names.append(f"{username}{i}")
-                similar_names.append(f"{i}{username}")
-            
-            response = f"🔄 *Similar to @{username}:*\n\n"
-            for name in similar_names[:8]:
-                response += f"• `@{name}`\n"
-            
-            response += f"\nSend any of these to check availability!"
-            
-            bot.send_message(
-                call.message.chat.id,
-                response,
-                parse_mode="Markdown"
-            )
-            bot.answer_callback_query(call.id)
-            
-        elif data == "continue_search":
-            # Continue searching for short names
-            handle_auto_swap_short(call)
-            bot.answer_callback_query(call.id)
-            
-        elif data.startswith("unban_"):
-            if not is_admin(user_id):
-                bot.answer_callback_query(call.id, "❌ Admin only", show_alert=True)
-                return
-            
-            target_id = int(data.split("_")[1])
-            
-            # Unban user
-            execute_query('''
-                UPDATE users 
-                SET is_banned = 0, ban_reason = NULL
-                WHERE user_id = ?
-            ''', (target_id,), commit=True)
-            
-            # Notify user
-            try:
-                bot.send_message(
-                    target_id,
-                    f"✅ *You have been unbanned!*\n\n"
-                    f"You can now use the bot again."
-                )
-            except:
-                pass
-            
-            bot.answer_callback_query(call.id, f"✅ User {target_id} unbanned")
-            admin_bannedusers(call.message)
-            
-        elif data.startswith("viewbanned_"):
-            target_id = int(data.split("_")[1])
-            
-            user = execute_one('''
-                SELECT user_id, username, first_name, last_name, ban_reason, join_date
-                FROM users WHERE user_id = ? AND is_banned = 1
-            ''', (target_id,))
-            
-            if user:
-                response = f"""
-🚫 *Banned User Details*
-
-*ID:* `{user[0]}`
-*Name:* {user[2]} {user[3]}
-*Username:* @{user[1] or 'N/A'}
-*Ban Reason:* {user[4] or 'No reason provided'}
-*Joined:* {user[5][:10]}
-
-*Actions:* Use `/unban {user[0]}` to unban
-"""
-                bot.answer_callback_query(call.id)
-                bot.send_message(user_id, response, parse_mode="Markdown")
-            else:
-                bot.answer_callback_query(call.id, "User not found or not banned", show_alert=True)
-        
-        elif data == "refresh_banned":
-            if not is_admin(user_id):
-                bot.answer_callback_query(call.id, "❌ Admin only", show_alert=True)
-                return
-            
-            admin_bannedusers(call.message)
-            bot.answer_callback_query(call.id, "Refreshed")
-            
-    except Exception as e:
-        print(f"Callback error: {e}")
-        bot.answer_callback_query(call.id, f"Error: {str(e)}", show_alert=True)
-
-# ==================== AUCTION CHECKER THREAD ====================
-def auction_checker_thread():
-    """Background thread to check auction endings"""
-    while True:
-        try:
-            check_auction_endings()
-            time.sleep(60)  # Check every minute
-        except Exception as e:
-            print(f"Error in auction checker: {e}")
-            time.sleep(60)
-
-# ==================== FLASK ROUTES ====================
+# ========== FLASK ENDPOINTS ==========
 @app.route('/')
-def health_check():
+def home():
     return jsonify({
-        "status": "online",
-        "service": "CARNAGE Swapper Bot",
-        "timestamp": datetime.now().isoformat(),
-        "version": "8.0.0",
-        "features": ["Instagram API", "Session Encryption", "Marketplace", "Auction System", "Vouch System", "Escrow", "Username Claimer"],
-        "users": execute_one("SELECT COUNT(*) FROM users")[0] or 0,
-        "listings": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active'")[0] or 0,
-        "auctions": execute_one("SELECT COUNT(*) FROM marketplace_listings WHERE sale_type = 'auction' AND status = 'active'")[0] or 0
+        "status": "running",
+        "service": "Face Swap Bot",
+        "version": "2.0",
+        "creator": "@PokiePy",
+        "admin_id": ADMIN_ID,
+        "endpoints": {
+            "/": "This page",
+            "/health": "Health check",
+            "/stats": "Bot statistics",
+            "/users": "User statistics"
+        },
+        "features": ["Face Swap", "Admin Controls", "Channel Verification", "User Management"]
     })
 
-@app.route('/dashboard/<int:user_id>')
-def user_dashboard(user_id):
-    """User dashboard HTML page"""
-    try:
-        stats = get_user_detailed_stats(user_id)
-        if not stats:
-            return "User not found", 404
-        
-        # Format achievements HTML
-        achievements_html = ""
-        if stats["achievements"]:
-            for ach in stats["achievements"][:6]:
-                achievements_html += f'''
-                <div class="achievement unlocked">
-                    <div class="achievement emoji">{ach[2]}</div>
-                    <div class="achievement name">{ach[1]}</div>
-                </div>
-                '''
-        else:
-            achievements_html = '<p style="text-align: center; color: #666;">No achievements yet</p>'
-        
-        # Format recent swaps HTML
-        recent_swaps_html = ""
-        if stats["recent_swaps"]:
-            for swap in stats["recent_swaps"][:5]:
-                status_class = "swap-success" if swap['status'] == 'success' else "swap-failed"
-                status_text = "✅ Success" if swap['status'] == 'success' else "❌ Failed"
-                recent_swaps_html += f'''
-                <div class="swap-item">
-                    <div>@{swap['target']}</div>
-                    <div class="{status_class}">{status_text}</div>
-                    <div>{swap['time'][11:16]}</div>
-                </div>
-                '''
-        else:
-            recent_swaps_html = '<p style="text-align: center; color: #666;">No swaps yet</p>'
-        
-        # Render template
-        html_content = HTML_TEMPLATES['dashboard'].format(
-            user_id=user_id,
-            status="✅ Approved" if is_user_approved(user_id) else "⏳ Pending",
-            join_date=stats['join_date'][:10],
-            last_active=stats['last_active'][:16],
-            total_swaps=stats['total_swaps'],
-            successful_swaps=stats['successful_swaps'],
-            success_rate=f"{stats['success_rate']:.1f}",
-            total_referrals=stats['total_referrals'],
-            free_swaps=stats['free_swaps'],
-            achievements_unlocked=stats['achievements_unlocked'],
-            achievements_total=10,
-            achievements_html=achievements_html,
-            recent_swaps_html=recent_swaps_html,
-            bot_username=BOT_USERNAME
-        )
-        
-        return html_content
-        
-    except Exception as e:
-        return f"Error: {str(e)}", 500
+@app.route('/health')
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "bot": "running",
+        "database": "connected",
+        "total_users": get_total_users(),
+        "active_users_24h": get_active_users_count(1),
+        "banned_users": len(BANNED_USERS),
+        "timestamp": datetime.now().isoformat()
+    }), 200
 
-@app.route('/admin')
-def admin_panel():
-    """Admin panel HTML page"""
-    # Basic auth - you should implement proper authentication
-    auth = request.args.get('auth')
-    if auth != 'carnage123':
-        return "Unauthorized", 401
+@app.route('/stats')
+def stats_api():
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history')
+    total_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+    successful_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+    failed_swaps = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return jsonify({
+        "total_users": get_total_users(),
+        "active_users_24h": get_active_users_count(1),
+        "banned_users": len(BANNED_USERS),
+        "verified_users": len([u for u in get_all_users() if u[7] == 1]),
+        "swap_statistics": {
+            "total_swaps": total_swaps,
+            "successful_swaps": successful_swaps,
+            "failed_swaps": failed_swaps,
+            "success_rate": (successful_swaps / max(1, total_swaps) * 100)
+        },
+        "active_sessions": len([uid for uid, data in user_data.items() if data.get('state')]),
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/users')
+def users_api():
+    users = get_all_users()
+    user_list = []
+    
+    for user in users:
+        user_list.append({
+            "user_id": user[0],
+            "username": user[1],
+            "first_name": user[2],
+            "last_name": user[3],
+            "join_date": user[4],
+            "last_active": user[5],
+            "is_banned": bool(user[6]),
+            "is_verified": bool(user[7]),
+            "swaps_count": user[8],
+            "successful_swaps": user[9],
+            "failed_swaps": user[10]
+        })
+    
+    return jsonify({
+        "total_users": len(user_list),
+        "users": user_list
+    })
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Telegram webhook endpoint"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Bad request', 400
+
+# ========== TELEGRAM COMMANDS ==========
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    # Check if banned
+    if user_id in BANNED_USERS:
+        bot.reply_to(message, "🚫 You are banned from using this bot.")
+        return
+    
+    # Register user
+    register_user(
+        user_id,
+        message.from_user.username,
+        message.from_user.first_name,
+        message.from_user.last_name
+    )
+    
+    # Check channel membership
+    if not check_channel_membership(user_id):
+        welcome_text = f"""👋 *Welcome to Face Swap Bot!*
+
+To use this bot, you must join our updates channel:
+
+📢 Channel: {REQUIRED_CHANNEL}
+
+*Steps:*
+1. Click the button below to join the channel
+2. Come back and click '✅ I Have Joined'
+3. Start using the bot!
+
+*Note:* The bot needs to verify your membership."""
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}"))
+        markup.add(types.InlineKeyboardButton("✅ I Have Joined", callback_data="verify_join"))
+        
+        bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=markup)
+    else:
+        verify_user(user_id)
+        show_main_menu(message)
+
+def show_main_menu(message):
+    welcome_text = """👋 *Welcome to Face Swap Bot!* 👋
+
+I'm created by @PokiePy. I can swap faces between two photos!
+
+*How to use:*
+1. Send me the first photo (face to use as source)
+2. Send me the second photo (face to replace)
+3. I'll process and send you the result!
+
+*Commands:*
+/start - Show this message
+/swap - Start a new face swap
+/status - Check bot status
+/mystats - Your statistics
+
+*Note:* Send clear, front-facing photos for best results! 😊"""
+    bot.reply_to(message, welcome_text, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data == "verify_join")
+def verify_callback(call):
+    user_id = call.from_user.id
+    
+    if check_channel_membership(user_id):
+        verify_user(user_id)
+        bot.answer_callback_query(call.id, "✅ Verification successful! You can now use the bot.")
+        show_main_menu(call.message)
+    else:
+        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
+
+@bot.message_handler(commands=['swap'])
+def start_swap(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if user_id in BANNED_USERS:
+        bot.reply_to(message, "🚫 You are banned from using this bot.")
+        return
+    
+    # Check if user is verified
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT verified FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if not result or result[0] == 0:
+        if not check_channel_membership(user_id):
+            bot.reply_to(message, f"❌ Please join {REQUIRED_CHANNEL} first to use the bot!")
+            return
+    
+    user_data[chat_id] = {'state': WAITING_FOR_SOURCE}
+    bot.reply_to(message, "📸 *Step 1:* Send me the first photo (the face you want to use).\n\nMake sure it's a clear front-facing photo!")
+
+@bot.message_handler(commands=['status'])
+def bot_status(message):
+    active_sessions = len([uid for uid, data in user_data.items() if data.get('state')])
+    total_users = get_total_users()
+    active_users = get_active_users_count(1)
+    
+    status_text = f"""🤖 *Bot Status*
+
+*Active Sessions:* {active_sessions}
+*Total Users:* {total_users}
+*Active Users (24h):* {active_users}
+*Face Swap API:* ✅ Connected
+
+*Your Status:* {'Processing...' if message.chat.id in user_data and user_data[message.chat.id].get('state') is None else 'Ready'}
+*Step:* {get_user_step(message.chat.id)}
+
+Type /swap to start a new face swap!"""
+    
+    bot.reply_to(message, status_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['mystats'])
+def my_stats(message):
+    user_id = message.from_user.id
+    
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT swaps_count, successful_swaps, failed_swaps, join_date
+        FROM users WHERE user_id = ?
+    ''', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        swaps_count, successful, failed, join_date = result
+        success_rate = (successful / max(1, swaps_count)) * 100
+        
+        stats_text = f"""📊 *Your Statistics*
+
+*Total Swaps:* {swaps_count}
+*Successful:* {successful}
+*Failed:* {failed}
+*Success Rate:* {success_rate:.1f}%
+*Joined:* {join_date[:10]}
+
+*Channel Status:* {'✅ Verified' if check_channel_membership(user_id) else '❌ Not Joined'}
+*Bot Status:* {'✅ Active' if user_id not in BANNED_USERS else '🚫 Banned'}"""
+    else:
+        stats_text = "📊 No statistics available yet."
+    
+    bot.reply_to(message, stats_text, parse_mode='Markdown')
+
+def get_user_step(chat_id):
+    if chat_id not in user_data:
+        return "Not started"
+    state = user_data[chat_id].get('state')
+    if state == WAITING_FOR_SOURCE:
+        return "Waiting for first photo"
+    elif state == WAITING_FOR_TARGET:
+        return "Waiting for second photo"
+    elif state is None and 'source' in user_data[chat_id] and 'target' in user_data[chat_id]:
+        return "Processing face swap"
+    else:
+        return "Ready"
+
+# ========== ADMIN COMMANDS ==========
+@bot.message_handler(commands=['users'])
+def list_users(message):
+    """Admin command: List all users with inline buttons"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    users = get_all_users()
+    
+    if not users:
+        bot.reply_to(message, "📭 No users registered yet.")
+        return
+    
+    # Create pagination
+    page = 0
+    try:
+        page = int(message.text.split()[1]) if len(message.text.split()) > 1 else 0
+    except:
+        page = 0
+    
+    users_per_page = 5
+    start_idx = page * users_per_page
+    end_idx = start_idx + users_per_page
+    page_users = users[start_idx:end_idx]
+    
+    message_text = f"👥 *Registered Users: {len(users)}*\n━━━━━━━━━━━━━━━━━━\n"
+    message_text += f"*Page {page+1}/{(len(users)-1)//users_per_page + 1}*\n\n"
+    
+    for user in page_users:
+        user_id, username, first_name, last_name, join_date, last_active, is_banned, verified, swaps_count, successful, failed = user
+        
+        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
+        verified_status = "✅" if verified else "❌"
+        
+        # Calculate activity
+        if last_active:
+            last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
+            days_ago = (datetime.now() - last_active_time).days if isinstance(last_active_time, datetime) else 999
+            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+        else:
+            activity = "Never"
+        
+        message_text += f"🆔 `{user_id}`\n"
+        message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
+        message_text += f"📛 {first_name} {last_name or ''}\n"
+        message_text += f"📅 Joined: {join_date[:10]}\n"
+        message_text += f"🕐 Last: {activity}\n"
+        message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
+        message_text += f"📊 Status: {status}\n"
+        message_text += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Create inline keyboard
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    
+    # Add action buttons for each user on this page
+    for user in page_users:
+        user_id = user[0]
+        username = user[1] or f"ID:{user_id}"
+        is_banned = bool(user[6])
+        
+        if is_banned:
+            markup.add(types.InlineKeyboardButton(
+                f"🟢 Unban {username[:15]}",
+                callback_data=f"admin_unban_{user_id}"
+            ))
+        else:
+            markup.add(types.InlineKeyboardButton(
+                f"🔴 Ban {username[:15]}",
+                callback_data=f"admin_ban_{user_id}"
+            ))
+    
+    # Add pagination buttons
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page_{page-1}"))
+    
+    if end_idx < len(users):
+        nav_buttons.append(types.InlineKeyboardButton("Next ➡️", callback_data=f"users_page_{page+1}"))
+    
+    if nav_buttons:
+        markup.add(*nav_buttons)
+    
+    # Add refresh button
+    markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_users"))
+    
+    if len(message_text) > 4000:
+        # Split message if too long
+        chunks = [message_text[i:i+4000] for i in range(0, len(message_text), 4000)]
+        for chunk in chunks[:-1]:
+            bot.send_message(ADMIN_ID, chunk, parse_mode='Markdown')
+        bot.send_message(ADMIN_ID, chunks[-1], parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.send_message(ADMIN_ID, message_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('users_page_'))
+def users_page_callback(call):
+    """Handle pagination for users list"""
+    page = int(call.data.split('_')[2])
+    users = get_all_users()
+    
+    users_per_page = 5
+    start_idx = page * users_per_page
+    end_idx = start_idx + users_per_page
+    page_users = users[start_idx:end_idx]
+    
+    message_text = f"👥 *Registered Users: {len(users)}*\n━━━━━━━━━━━━━━━━━━\n"
+    message_text += f"*Page {page+1}/{(len(users)-1)//users_per_page + 1}*\n\n"
+    
+    for user in page_users:
+        user_id, username, first_name, last_name, join_date, last_active, is_banned, verified, swaps_count, successful, failed = user
+        
+        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
+        verified_status = "✅" if verified else "❌"
+        
+        if last_active:
+            last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S') if isinstance(last_active, str) else last_active
+            days_ago = (datetime.now() - last_active_time).days if isinstance(last_active_time, datetime) else 999
+            activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
+        else:
+            activity = "Never"
+        
+        message_text += f"🆔 `{user_id}`\n"
+        message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
+        message_text += f"📛 {first_name} {last_name or ''}\n"
+        message_text += f"📅 Joined: {join_date[:10]}\n"
+        message_text += f"🕐 Last: {activity}\n"
+        message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
+        message_text += f"📊 Status: {status}\n"
+        message_text += "━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Update inline keyboard
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    
+    for user in page_users:
+        user_id = user[0]
+        username = user[1] or f"ID:{user_id}"
+        is_banned = bool(user[6])
+        
+        if is_banned:
+            markup.add(types.InlineKeyboardButton(
+                f"🟢 Unban {username[:15]}",
+                callback_data=f"admin_unban_{user_id}"
+            ))
+        else:
+            markup.add(types.InlineKeyboardButton(
+                f"🔴 Ban {username[:15]}",
+                callback_data=f"admin_ban_{user_id}"
+            ))
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page_{page-1}"))
+    
+    if end_idx < len(users):
+        nav_buttons.append(types.InlineKeyboardButton("Next ➡️", callback_data=f"users_page_{page+1}"))
+    
+    if nav_buttons:
+        markup.add(*nav_buttons)
+    
+    markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_users"))
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=message_text,
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_ban_'))
+def admin_ban_callback(call):
+    """Handle ban button click"""
+    user_id = int(call.data.split('_')[2])
+    
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    ban_user(user_id)
+    bot.answer_callback_query(call.id, f"✅ User {user_id} banned!")
+    
+    # Update the message
+    users_page_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_unban_'))
+def admin_unban_callback(call):
+    """Handle unban button click"""
+    user_id = int(call.data.split('_')[2])
+    
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    unban_user(user_id)
+    bot.answer_callback_query(call.id, f"✅ User {user_id} unbanned!")
+    
+    # Update the message
+    users_page_callback(call)
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_users")
+def refresh_users_callback(call):
+    """Refresh users list"""
+    list_users(call.message)
+    bot.answer_callback_query(call.id, "✅ Refreshed!")
+
+@bot.message_handler(commands=['ban'])
+def ban_user_command(message):
+    """Admin command: Ban a user"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
     
     try:
-        # Get admin stats
-        total_users = get_total_users()
-        active_users = execute_one("SELECT COUNT(*) FROM users WHERE last_active > ?",
-                                 ((datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),))[0] or 0
+        user_id = int(message.text.split()[1])
+        ban_user(user_id)
+        bot.reply_to(message, f"✅ User `{user_id}` has been banned.")
         
-        total_swaps = execute_one("SELECT COUNT(*) FROM swap_history")[0] or 0
-        successful_swaps = execute_one("SELECT COUNT(*) FROM swap_history WHERE status = 'success'")[0] or 0
-        success_rate = (successful_swaps / total_swaps * 100) if total_swaps > 0 else 0
-        
-        total_listings = execute_one("SELECT COUNT(*) FROM marketplace_listings")[0] or 0
-        pending_transactions = execute_one("SELECT COUNT(*) FROM marketplace_swaps WHERE status IN ('created', 'payment_received')")[0] or 0
-        
-        # Get users for initial table
-        users = execute_query('''
-            SELECT user_id, username, first_name, tier, approved, is_banned, 
-                   credits, total_swaps, successful_swaps, vouch_score
-            FROM users 
-            ORDER BY user_id
-            LIMIT 20
-        ''')
-        
-        users_html = ""
-        for user in users:
-            status_class = "badge-danger" if user[5] else ("badge-success" if user[4] else "badge-warning")
-            status_text = "Banned" if user[5] else ("Approved" if user[4] else "Pending")
+        # Notify the banned user
+        try:
+            bot.send_message(user_id, "🚫 You have been banned from using this bot.")
+        except:
+            pass
             
-            users_html += f'''
-            <tr>
-                <td>{user[0]}</td>
-                <td>@{user[1] or 'N/A'}</td>
-                <td><span class="badge">{user[3].upper()}</span></td>
-                <td>{user[6]} ({user[7]}✅)</td>
-                <td>{user[9]}⭐</td>
-                <td><span class="badge {status_class}">{status_text}</span></td>
-                <td>
-                    <button class="btn btn-small" onclick="adminAction('approve', {user[0]})">Approve</button>
-                    <button class="btn btn-small" onclick="adminAction('ban', {user[0]})">Ban</button>
-                    <button class="btn btn-small" onclick="adminAction('addcredits', {user[0]})">Add Credits</button>
-                </td>
-            </tr>
-            '''
+    except (IndexError, ValueError):
+        bot.reply_to(message, "❌ Usage: /ban <user_id>")
+
+@bot.message_handler(commands=['unban'])
+def unban_user_command(message):
+    """Admin command: Unban a user"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        user_id = int(message.text.split()[1])
+        unban_user(user_id)
+        bot.reply_to(message, f"✅ User `{user_id}` has been unbanned.")
         
-        initial_content = f'''
-        <h3><i class="fas fa-users"></i> Users Management</h3>
-        <table id="usersTable">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Username</th>
-                    <th>Tier</th>
-                    <th>Swaps</th>
-                    <th>Vouch</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {users_html}
-            </tbody>
-        </table>
-        '''
+        # Notify the unbanned user
+        try:
+            bot.send_message(user_id, "✅ Your ban has been lifted. You can use the bot again.")
+        except:
+            pass
+            
+    except (IndexError, ValueError):
+        bot.reply_to(message, "❌ Usage: /unban <user_id>")
+
+@bot.message_handler(commands=['botstatus'])
+def bot_status_admin(message):
+    """Admin command: Show detailed bot status"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    # Get database statistics
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history')
+    total_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+    successful_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+    failed_swaps = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM users WHERE verified = 1')
+    verified_users = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    success_rate = (successful_swaps / max(1, total_swaps)) * 100
+    
+    status_message = f"""🤖 *ADMIN BOT STATUS REPORT*
+
+━━━━━━━━━━━━━━━━━━
+📊 *User Statistics:*
+• Total Users: {get_total_users()}
+• Active Users (24h): {get_active_users_count(1)}
+• Verified Users: {verified_users}
+• Banned Users: {len(BANNED_USERS)}
+
+🔄 *Swap Statistics:*
+• Total Swaps: {total_swaps}
+• Successful: {successful_swaps}
+• Failed: {failed_swaps}
+• Success Rate: {success_rate:.1f}%
+
+📱 *Current Sessions:*
+• Active Face Swaps: {len([uid for uid, data in user_data.items() if data.get('state')])}
+• Waiting for 1st Photo: {len([uid for uid, data in user_data.items() if data.get('state') == WAITING_FOR_SOURCE])}
+• Waiting for 2nd Photo: {len([uid for uid, data in user_data.items() if data.get('state') == WAITING_FOR_TARGET])}
+
+🔧 *System Status:*
+• Bot: ✅ RUNNING
+• Database: ✅ CONNECTED
+• Face Swap API: ✅ AVAILABLE
+• Channel Check: ✅ ACTIVE
+• Webhook Mode: {'✅ ENABLED' if WEBHOOK_URL else '❌ DISABLED'}
+
+🌐 *Endpoints:*
+• Health: `/health` endpoint
+• Stats: `/stats` endpoint
+• Users API: `/users` endpoint
+
+━━━━━━━━━━━━━━━━━━
+*Admin Commands:*
+/users - List all users with buttons
+/ban <id> - Ban user
+/unban <id> - Unban user
+/botstatus - This report
+/stats - Show statistics
+/exportdata - Export user data
+/refreshdb - Refresh database
+/broadcast <msg> - Broadcast message
+━━━━━━━━━━━━━━━━━━
+"""
+    
+    bot.reply_to(message, status_message, parse_mode='Markdown')
+
+@bot.message_handler(commands=['stats'])
+def show_stats(message):
+    """Show bot statistics"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    # Get quick stats
+    total_users = get_total_users()
+    active_users = get_active_users_count(1)
+    banned_users = len(BANNED_USERS)
+    active_sessions = len([uid for uid, data in user_data.items() if data.get('state')])
+    
+    stats_text = f"""📈 *Quick Statistics*
+
+*Users:*
+• Total: {total_users}
+• Active (24h): {active_users}
+• Banned: {banned_users}
+
+*Sessions:*
+• Active: {active_sessions}
+
+*Channel:*
+• Required: {REQUIRED_CHANNEL}
+• Verification: {'✅ Enabled'}
+
+For detailed report, use /botstatus"""
+    
+    bot.reply_to(message, stats_text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['exportdata'])
+def export_data(message):
+    """Export user data as CSV"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    users = get_all_users()
+    
+    if not users:
+        bot.reply_to(message, "📭 No user data to export.")
+        return
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow(['User ID', 'Username', 'First Name', 'Last Name', 
+                     'Join Date', 'Last Active', 'Banned', 'Verified',
+                     'Total Swaps', 'Successful', 'Failed'])
+    
+    # Write data
+    for user in users:
+        writer.writerow(user[:11])  # First 11 columns
+    
+    # Get CSV data
+    csv_data = output.getvalue()
+    output.close()
+    
+    # Send as file
+    bot.send_document(
+        message.chat.id,
+        ('users_export.csv', csv_data.encode('utf-8')),
+        caption=f"📊 User data export ({len(users)} users)"
+    )
+
+@bot.message_handler(commands=['refreshdb'])
+def refresh_database(message):
+    """Refresh database"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        init_database()
+        bot.reply_to(message, "✅ Database refreshed successfully!")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error refreshing database: {str(e)}")
+
+@bot.message_handler(commands=['refreshbot'])
+def refresh_bot(message):
+    """Refresh bot"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    # Clear user data
+    user_data.clear()
+    
+    # Reload banned users
+    conn = sqlite3.connect('face_swap_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
+    BANNED_USERS.clear()
+    for row in cursor.fetchall():
+        BANNED_USERS.add(row[0])
+    conn.close()
+    
+    bot.reply_to(message, "✅ Bot refreshed! User data cleared and banned users reloaded.")
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast_message(message):
+    """Broadcast message to all users"""
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ This command is for admins only.")
+        return
+    
+    try:
+        # Extract message text (remove /broadcast command)
+        broadcast_text = message.text.replace('/broadcast', '', 1).strip()
         
-        html_content = HTML_TEMPLATES['admin_panel'].format(
-            total_users=total_users,
-            active_today=active_users,
-            total_swaps=total_swaps,
-            success_rate=f"{success_rate:.1f}",
-            total_listings=total_listings,
-            pending_transactions=pending_transactions,
-            initial_content=initial_content
+        if not broadcast_text:
+            bot.reply_to(message, "❌ Please provide a message to broadcast.\nUsage: /broadcast Your message here")
+            return
+        
+        # Confirmation
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✅ Yes, Send", callback_data=f"confirm_broadcast_{hash(broadcast_text)}"),
+            types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")
         )
         
-        return html_content
+        bot.reply_to(
+            message,
+            f"📢 *Broadcast Confirmation*\n\n"
+            f"*Message:*\n{broadcast_text}\n\n"
+            f"*Recipients:* All users ({get_total_users()} users)\n\n"
+            f"Are you sure you want to send this broadcast?",
+            parse_mode='Markdown',
+            reply_markup=markup
+        )
         
     except Exception as e:
-        return f"Error: {str(e)}", 500
+        bot.reply_to(message, f"❌ Error: {str(e)}")
 
-@app.route('/admin/tab/<tab_name>')
-def admin_tab(tab_name):
-    """Admin panel tab content"""
-    try:
-        if tab_name == 'users':
-            users = execute_query('''
-                SELECT user_id, username, first_name, tier, approved, is_banned, 
-                       credits, total_swaps, successful_swaps, vouch_score
-                FROM users 
-                ORDER BY user_id
-                LIMIT 50
-            ''')
-            
-            users_html = ""
-            for user in users:
-                status_class = "badge-danger" if user[5] else ("badge-success" if user[4] else "badge-warning")
-                status_text = "Banned" if user[5] else ("Approved" if user[4] else "Pending")
-                
-                users_html += f'''
-                <tr>
-                    <td>{user[0]}</td>
-                    <td>@{user[1] or 'N/A'}</td>
-                    <td><span class="badge">{user[3].upper()}</span></td>
-                    <td>{user[6]} ({user[7]}✅)</td>
-                    <td>{user[8]}</td>
-                    <td><span class="badge {status_class}">{status_text}</span></td>
-                    <td>
-                        <button class="btn btn-small" onclick="adminAction('approve', {user[0]})">Approve</button>
-                        <button class="btn btn-small" onclick="adminAction('ban', {user[0]})">Ban</button>
-                    </td>
-                </tr>
-                '''
-            
-            return f'''
-            <h3><i class="fas fa-users"></i> Users Management</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Username</th>
-                        <th>Tier</th>
-                        <th>Swaps</th>
-                        <th>Credits</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {users_html}
-                </tbody>
-            </table>
-            '''
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_broadcast_'))
+def confirm_broadcast(call):
+    """Send broadcast to all users"""
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    broadcast_text = call.message.text.split("*Message:*\n")[1].split("\n\n*Recipients:*")[0]
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="📢 *Sending Broadcast...*\n\nPlease wait, this may take a while.",
+        parse_mode='Markdown'
+    )
+    
+    users = get_all_users()
+    sent_count = 0
+    failed_count = 0
+    
+    for user in users:
+        user_id = user[0]
         
-        elif tab_name == 'swaps':
-            swaps = execute_query('''
-                SELECT sh.*, u.username
-                FROM swap_history sh
-                JOIN users u ON sh.user_id = u.user_id
-                ORDER BY sh.swap_time DESC
-                LIMIT 30
-            ''')
-            
-            swaps_html = ""
-            for swap in swaps:
-                status_class = "badge-success" if swap[2] == 'success' else "badge-danger"
-                
-                swaps_html += f'''
-                <tr>
-                    <td>{swap[0]}</td>
-                    <td>@{swap[6] or 'N/A'}</td>
-                    <td>@{swap[1]}</td>
-                    <td><span class="badge {status_class}">{swap[2]}</span></td>
-                    <td>{swap[3]}</td>
-                    <td>{swap[4] or '-'}</td>
-                </tr>
-                '''
-            
-            return f'''
-            <h3><i class="fas fa-exchange-alt"></i> Recent Swaps</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>User</th>
-                        <th>Target</th>
-                        <th>Status</th>
-                        <th>Time</th>
-                        <th>Error</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {swaps_html}
-                </tbody>
-            </table>
-            '''
-        
-        elif tab_name == 'marketplace':
-            listings = execute_query('''
-                SELECT ml.*, u.username as seller_username
-                FROM marketplace_listings ml
-                JOIN users u ON ml.seller_id = u.user_id
-                ORDER BY ml.created_at DESC
-                LIMIT 30
-            ''')
-            
-            listings_html = ""
-            for listing in listings:
-                status_class = "badge-success" if listing[6] == 'active' else "badge-warning"
-                
-                listings_html += f'''
-                <tr>
-                    <td>{listing[1]}</td>
-                    <td>@{listing[2]}</td>
-                    <td>@{listing[15]}</td>
-                    <td>{listing[3]} {listing[4]}</td>
-                    <td>{listing[7].upper()}</td>
-                    <td><span class="badge {status_class}">{listing[6]}</span></td>
-                    <td>{listing[10]}</td>
-                    <td>{listing[11]}</td>
-                </tr>
-                '''
-            
-            return f'''
-            <h3><i class="fas fa-store"></i> Marketplace Listings</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Username</th>
-                        <th>Seller</th>
-                        <th>Price</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Created</th>
-                        <th>Expires</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {listings_html}
-                </tbody>
-            </table>
-            '''
-        
-        elif tab_name == 'system':
-            # System stats
-            uptime = str(timedelta(seconds=int(time.time() - start_time)))
-            memory = psutil.virtual_memory()
-            cpu = psutil.cpu_percent(interval=1)
-            
-            return f'''
-            <h3><i class="fas fa-cog"></i> System Status</h3>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 20px;">
-                <div class="stat-card">
-                    <div class="stat-title">Uptime</div>
-                    <div class="stat-value">{uptime}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">CPU Usage</div>
-                    <div class="stat-value">{cpu}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">Memory Usage</div>
-                    <div class="stat-value">{memory.percent}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">Threads</div>
-                    <div class="stat-value">{threading.active_count()}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">API Requests</div>
-                    <div class="stat-value">{requests_count}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-title">API Errors</div>
-                    <div class="stat-value">{errors_count}</div>
-                </div>
-            </div>
-            '''
-        
-        return f"<h3>Tab {tab_name}</h3><p>Content coming soon...</p>"
-        
-    except Exception as e:
-        return f"Error: {str(e)}", 500
-
-@app.route('/admin/action', methods=['POST'])
-def admin_action():
-    """Handle admin actions"""
-    try:
-        data = request.json
-        action = data.get('action')
-        user_id = data.get('userId')
-        reason = data.get('reason')
-        
-        if action == 'approve':
-            execute_query("UPDATE users SET approved = 1 WHERE user_id = ?", (user_id,), commit=True)
-            return jsonify({"success": True, "message": f"User {user_id} approved"})
-        elif action == 'ban':
-            execute_query("UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?", (reason, user_id), commit=True)
-            return jsonify({"success": True, "message": f"User {user_id} banned: {reason}"})
-        elif action == 'addcredits':
-            execute_query("UPDATE users SET credits = credits + 100 WHERE user_id = ?", (user_id,), commit=True)
-            return jsonify({"success": True, "message": f"Added 100 credits to user {user_id}"})
-        
-        return jsonify({"success": False, "message": "Unknown action"})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
-
-@app.route('/ping')
-def ping():
-    return jsonify({"status": "pong", "time": datetime.now().isoformat()})
-
-@app.route('/health')
-def health():
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-
-@app.route('/ping1')
-def ping1():
-    return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
-
-# ==================== WHAT TO POST IN CHANNELS ====================
-def post_initial_announcements():
-    """Post initial announcements to channels"""
-    try:
-        # Updates Channel Announcement
-        updates_message = """
-🎉 *CARNAGE SWAPPER v8.0 OFFICIAL LAUNCH!* 🚀
-
-We are excited to announce *Version 8.0* of *CARNAGE Swapper Bot* - Now with USERNAME CLAIMER FEATURE!
-
-*✨ NEW FEATURE IN v8.0:*
-
-🚀 *USERNAME CLAIMER*
-• Check username availability
-• Claim available usernames instantly
-• Only ONE session needed
-• No target account required
-• Perfect for claiming 1L/2L/3L names
-• Works with numbers-only usernames
-
-🎯 *AUCTION SYSTEM*
-• Bid on Instagram usernames
-• Automatic bid increments
-• Buy Now option
-• Fake bid protection (Permanent ban for fake bids)
-
-🤝 *VOUCH SYSTEM*
-• Automatic vouch requests after swaps
-• Positive/Negative feedback
-• Vouch score calculation
-• Verified transactions only
-
-🛒 *ENHANCED MARKETPLACE*
-• Fixed price and auction listings
-• Verified seller sessions
-• Real currency only (INR/USDT)
-• Secure escrow transactions
-
-🔐 *IMPROVED SECURITY*
-• One middleman per swap system
-• Enhanced session encryption
-• Fake bid detection
-• Permanent ban for rule violations
-
-📊 *USER REPUTATION*
-• Vouch scores displayed
-• Transaction history
-• Trust levels
-
-*🚀 GET STARTED:*
-1. Start the bot: @CarnageSwapperBot
-2. Join our channels (required)
-3. Get approved (instant via referral)
-4. Start swapping, selling, bidding, or claiming!
-
-*⚠️ IMPORTANT RULES:*
-• Fake bids = PERMANENT BAN
-• Always use middleman for transactions
-• Real currency only in marketplace
-• Verify sellers before buying
-
-*🎁 REFERRAL PROGRAM:*
-Refer friends and earn FREE swaps! 2 swaps per referral!
-
-*Welcome to the most advanced username swapping platform!* 🔥
-"""
-        
-        # Marketplace Channel Announcement
-        marketplace_message = """
-🛒 *CARNAGE MARKETPLACE v8.0 - NOW WITH AUCTIONS!* 💰
-
-Welcome to the upgraded CARNAGE Marketplace with AUCTION SYSTEM!
-
-*🎯 NEW AUCTION FEATURES:*
-• Bid on Instagram usernames
-• Automatic bid increments
-• Buy Now option available
-• 24-hour auction duration
-• Real-time bid notifications
-
-*💰 SALE TYPES AVAILABLE:*
-1. *Fixed Price* - Set your price
-2. *Auction* - Accept bids for 24 hours
-3. *Buy Now + Auction* - Set buy now price + accept bids
-
-*🚀 NEW: USERNAME CLAIMER*
-• Check if usernames are available
-• Claim instantly with one session
-• Perfect for rare names (1L/2L/3L)
-• Numbers-only username support
-
-*⚠️ AUCTION RULES:*
-• Minimum bid increments apply
-• Fake bids = PERMANENT BAN
-• Auction winner must complete purchase
-• Buy Now ends auction immediately
-
-*🤝 VOUCH SYSTEM:*
-• Automatic vouch requests after swaps
-• Build your reputation
-• Vouch scores displayed on listings
-• Trusted sellers get badges
-
-*📋 HOW TO SELL:*
-1. Use `/sell` command
-2. Choose sale type (Fixed/Auction/Buy Now)
-3. Set price and verify ownership
-4. Your listing goes live instantly!
-
-*🛍️ HOW TO BUY/BID:*
-1. Browse with `/marketplace`
-2. Click on listing to view details
-3. Place bid or buy now
-4. Contact middleman to complete
-
-*🚀 HOW TO CLAIM USERNAMES:*
-1. Use 'Username Claimer' in main menu
-2. Setup your claimer session
-3. Check username availability
-4. Claim instantly if available!
-
-*💰 PAYMENT METHODS:*
-• Indian Rupees (INR) - UPI/Bank Transfer
-• USDT Crypto (TRC20/ERC20)
-
-*Start listing, bidding, or claiming now with @CarnageSwapperBot!* 🚀
-
-*Need help?* Contact @CARNAGEV1
-"""
-        
-        # Send to updates channel
-        bot.send_message(UPDATES_CHANNEL, updates_message, parse_mode="Markdown")
-        
-        # Send to marketplace channel
-        bot.send_message(MARKETPLACE_CHANNEL_ID, marketplace_message, parse_mode="Markdown")
-        
-        print("✅ Initial announcements posted to channels")
-        
-    except Exception as e:
-        print(f"❌ Error posting announcements: {e}")
-
-# ==================== MAIN STARTUP ====================
-def run_flask_app():
-    """Run Flask app"""
-    port = int(os.environ.get('PORT', 8000))
-    print(f"🌐 Starting Flask server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
-def run_telegram_bot():
-    """Run Telegram bot"""
-    print("🤖 Starting Telegram bot polling...")
-    while True:
-        try:
-            bot.polling(non_stop=True, interval=0, timeout=20)
-        except Exception as e:
-            print(f"❌ Bot polling error: {e}")
-            time.sleep(5)
+        # Skip banned users
+        if user_id in BANNED_USERS:
             continue
+        
+        try:
+            bot.send_message(user_id, f"📢 *Announcement from Admin*\n\n{broadcast_text}", parse_mode='Markdown')
+            sent_count += 1
+            time.sleep(0.1)  # Rate limiting
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Failed to send to {user_id}: {e}")
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=f"✅ *Broadcast Completed!*\n\n"
+             f"*Sent to:* {sent_count} users\n"
+             f"*Failed:* {failed_count} users\n"
+             f"*Total:* {len(users)} users",
+        parse_mode='Markdown'
+    )
 
-def main():
-    """Main function"""
-    # Start Flask server
-    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_broadcast")
+def cancel_broadcast(call):
+    """Cancel broadcast"""
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
+        return
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="❌ Broadcast cancelled.",
+        parse_mode='Markdown'
+    )
+
+# ========== FACE SWAP HANDLER ==========
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    try:
+        chat_id = message.chat.id
+        user_id = message.from_user.id
+        
+        # Check if banned
+        if user_id in BANNED_USERS:
+            bot.reply_to(message, "🚫 You are banned from using this bot.")
+            return
+        
+        # Get the photo (highest resolution)
+        file_id = message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{bot.token}/{file_info.file_path}"
+        
+        # Download image
+        img_data = requests.get(file_url).content
+        
+        if chat_id not in user_data:
+            # Start new swap session
+            user_data[chat_id] = {
+                'state': WAITING_FOR_TARGET,
+                'source': img_data,
+                'start_time': time.time()
+            }
+            bot.reply_to(message, "✅ *Got your first photo!*\n\n📸 *Step 2:* Now send me the second photo (the face you want to replace).")
+        else:
+            if user_data[chat_id]['state'] == WAITING_FOR_TARGET:
+                user_data[chat_id]['target'] = img_data
+                user_data[chat_id]['state'] = None
+                
+                bot.reply_to(message, "🔄 *Processing face swap...*\n\nPlease wait while I swap the faces. This usually takes 10-30 seconds.")
+                
+                # Convert images to base64
+                source_base64 = base64.b64encode(user_data[chat_id]['source']).decode('utf-8')
+                target_base64 = base64.b64encode(user_data[chat_id]['target']).decode('utf-8')
+                
+                # Call face swap API
+                api_url = "https://api.deepswapper.com/swap"
+                data = {
+                    'source': source_base64,
+                    'target': target_base64,
+                    'security': {
+                        'token': FACE_SWAP_API_TOKEN,
+                        'type': 'invisible',
+                        'id': 'deepswapper'
+                    }
+                }
+                
+                headers = {'Content-Type': 'application/json'}
+                response = requests.post(api_url, json=data, headers=headers)
+                
+                processing_time = time.time() - user_data[chat_id]['start_time']
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if 'result' in response_data:
+                        image_data = base64.b64decode(response_data['result'])
+                       
+                        # Save to file (optional)
+                        if not os.path.exists('results'):
+                            os.makedirs('results')
+                        
+                        filename = f"result_{int(time.time())}.png"
+                        filepath = os.path.join('results', filename)
+                        
+                        with open(filepath, 'wb') as f:
+                            f.write(image_data)
+                        
+                        # Send result to user
+                        with open(filepath, 'rb') as photo:
+                            bot.send_photo(chat_id, photo, caption="✅ *Face swap completed!*\n\nType /swap to start another!")
+                       
+                        # Update user statistics
+                        update_user_stats(user_id, success=True)
+                        add_swap_history(user_id, "success", processing_time)
+                        
+                        logger.info(f"Face swap completed for {chat_id} in {processing_time:.2f}s")
+                        
+                        # Clean up user data
+                        del user_data[chat_id]
+                    else:
+                        bot.reply_to(message, "❌ *Error:* No result from face swap API. Please try again.")
+                        update_user_stats(user_id, success=False)
+                        add_swap_history(user_id, "failed", processing_time)
+                        if chat_id in user_data:
+                            del user_data[chat_id]
+                else:
+                    bot.reply_to(message, f"❌ *Error:* Face swap API request failed (Status: {response.status_code}). Please try again.")
+                    update_user_stats(user_id, success=False)
+                    add_swap_history(user_id, "failed", processing_time)
+                    if chat_id in user_data:
+                        del user_data[chat_id]
+                
+            else:
+                bot.reply_to(message, "⚠️ *Please complete the current swap first or type /swap to start over.*")
+    
+    except Exception as e:
+        logger.error(f"Error processing photo: {str(e)}")
+        bot.reply_to(message, f"❌ *An error occurred:* {str(e)}\n\nPlease try again with different photos.")
+        if chat_id in user_data:
+            del user_data[chat_id]
+
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    chat_id = message.chat.id
+    
+    if chat_id in user_data:
+        state = user_data[chat_id].get('state')
+        if state == WAITING_FOR_SOURCE:
+            bot.reply_to(message, "📸 Please send the first photo (the face to use).")
+        elif state == WAITING_FOR_TARGET:
+            bot.reply_to(message, "📸 Please send the second photo (the face to replace).")
+        elif state is None and 'source' in user_data[chat_id] and 'target' in user_data[chat_id]:
+            bot.reply_to(message, "⏳ Your face swap is being processed. Please wait...")
+        else:
+            bot.reply_to(message, "Type /swap to start a face swap!")
+    else:
+        bot.reply_to(message, "👋 Welcome! Type /start to see instructions or /swap to start a face swap!")
+
+# ========== START BOT ==========
+if __name__ == '__main__':
+    print("=" * 60)
+    print("🤖 FACE SWAP BOT WITH ADMIN CONTROLS")
+    print("=" * 60)
+    print(f"📱 Bot Token: Loaded")
+    print(f"👑 Admin ID: {ADMIN_ID}")
+    print(f"📢 Required Channel: {REQUIRED_CHANNEL}")
+    print(f"🌐 Port: {BOT_PORT}")
+    print(f"🏓 Health Check: http://localhost:{BOT_PORT}/health")
+    print(f"📊 Stats: http://localhost:{BOT_PORT}/stats")
+    print("=" * 60)
+    print("🎯 Features:")
+    print("• Face swapping between two photos")
+    print("• Admin controls and user management")
+    print("• Channel verification system")
+    print("• User statistics and analytics")
+    print("• Broadcast messaging")
+    print("• Export user data")
+    print("=" * 60)
+    print("👑 Admin Commands:")
+    print("/users - List all users with buttons")
+    print("/ban <id> - Ban user")
+    print("/unban <id> - Unban user")
+    print("/botstatus - Detailed bot report")
+    print("/stats - Quick statistics")
+    print("/exportdata - Export user data as CSV")
+    print("/refreshdb - Refresh database")
+    print("/refreshbot - Refresh bot data")
+    print("/broadcast <msg> - Broadcast to all users")
+    print("=" * 60)
+    print("👑 Created by: @PokiePy")
+    print("💰 Credit change krne wale ki mkb")
+    print("=" * 60)
+    
+    # Start Flask in background
+    flask_thread = threading.Thread(
+        target=lambda: app.run(
+            host='0.0.0.0',
+            port=BOT_PORT,
+            debug=False,
+            use_reloader=False
+        ),
+        daemon=True
+    )
     flask_thread.start()
     
+    # Wait for Flask to start
     time.sleep(2)
     
-    # Initialize database
-    print("🔧 Initializing database with encryption...")
-    init_database()
+    # Start bot
+    if WEBHOOK_URL:
+        print(f"🌐 Using webhook: {WEBHOOK_URL}")
+        print(f"✅ Webhook set successfully!")
+    else:
+        print("📡 Using polling mode")
+        bot_thread = threading.Thread(target=lambda: bot.polling(non_stop=True), daemon=True)
+        bot_thread.start()
+        print("✅ Bot polling started!")
     
-    # Start auction checker thread
-    auction_thread = threading.Thread(target=auction_checker_thread, daemon=True)
-    auction_thread.start()
+    print("🎯 Bot is ready! Use /start in Telegram to begin.")
+    print(f"🌐 API available at: http://localhost:{BOT_PORT}")
+    print("=" * 60)
     
-    print("✅ Database initialized successfully")
-    print("🚀 CARNAGE Swapper Bot v8.0 - PRODUCTION READY")
-    print(f"👑 Admin ID: {ADMIN_USER_ID}")
-    print(f"🤖 Bot Username: @{BOT_USERNAME}")
-    print(f"📢 Updates Channel: {CHANNELS['updates']['id']}")
-    print(f"✅ Proofs Channel: {CHANNELS['proofs']['id']}")
-    print(f"🛒 Marketplace Channel: {MARKETPLACE_CHANNEL_ID}")
-    print(f"👥 Admin Group: {ADMIN_GROUP_ID}")
-    print("✨ Features: COMPLETE MARKETPLACE WITH AUCTION & VOUCH SYSTEM")
-    print("🚀 NEW FEATURE: USERNAME CLAIMER - Check & claim available usernames!")
-    print("🔐 Session Encryption: All sessions encrypted at rest")
-    print("🎯 Auction System: Bid on usernames with Buy Now option")
-    print("🤝 Vouch System: User reputation with automatic vouch requests")
-    print("💰 Marketplace: Real money only (INR/USDT)")
-    print("⚖️ One Middleman System: Simplified escrow transactions")
-    print("📊 HTML Dashboard & Admin Panel")
-    print("🚫 Fake Bid Protection: Permanent ban for fake bids")
-    
-    # Post initial announcements
-    print("📢 Posting initial announcements to channels...")
-    try:
-        post_initial_announcements()
-    except:
-        print("⚠️ Could not post announcements (channels might not exist yet)")
-    
-    # Start Telegram bot
-    bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
-    bot_thread.start()
-    print("🤖 Telegram bot started in background")
-    
-    print("\n🎯 **OPERATION MODES:**")
-    print("• User Functions: DM ONLY")
-    print("• Middleman Commands: GROUP ONLY")
-    print("• Admin Commands: DM ONLY")
-    print("• Marketplace: Real currency only")
-    print("• Auction System: Bidding with Buy Now option")
-    print("• Vouch System: Automatic reputation building")
-    print("• Session Verification: Required for sellers")
-    print("• Username Claimer: ONE session - check & claim available names")
-    
-    print("\n🔗 **URLS:**")
-    print(f"• Dashboard: https://separate-genny-1carnage1-2b4c603c.koyeb.app/dashboard/USER_ID")
-    print(f"• Admin Panel: https://separate-genny-1carnage1-2b4c603c.koyeb.app/admin?auth=carnage123")
-    
-    print("\n✅ **PRODUCTION READY WITH ALL FEATURES!**")
-    print("\n📋 **ADDED FEATURES IN v8.0:**")
-    print("1. ✅ Username Claimer - Check & claim available usernames")
-    print("2. ✅ Auction System - Bid on usernames")
-    print("3. ✅ Vouch System - User reputation")
-    print("4. ✅ Fixed /sell command with inline menus")
-    print("5. ✅ Fixed /marketplace with inline buttons")
-    print("6. ✅ Buy Now option for auctions")
-    print("7. ✅ Fake bid protection (Permanent ban)")
-    print("8. ✅ Automatic vouch requests after swaps")
-    print("9. ✅ One middleman per swap system")
-    print("10. ✅ Vouch scores in marketplace listings")
-    print("11. ✅ Auction ending checker (background thread)")
-    print("12. ✅ Username format validation (1L/2L/3L/numbers-only support)")
-    
+    # Keep main thread alive
     try:
         while True:
-            time.sleep(1)
+            time.sleep(60)
     except KeyboardInterrupt:
-        print("\n🛑 Bot shutting down...")
-
-if __name__ == '__main__':
-    main()
+        print("\n🛑 Bot stopped.")
