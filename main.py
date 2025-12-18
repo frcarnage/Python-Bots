@@ -12,6 +12,7 @@ import logging
 import threading
 import csv
 import io
+import sys
 
 # ========== CONFIGURATION ==========
 BOT_TOKEN = "8522048948:AAGSCayCSZZF_6z2nHcGjVC7B64E3C9u6F8"
@@ -32,13 +33,8 @@ FACE_SWAP_API_TOKEN = "0.ufDEMbVMT7mc9_XLsFDSK5CQqdj9Cx_Zjww0DevIvXN5M4fXQr3B9Yt
 app = Flask(__name__)
 
 # ========== TELEGRAM BOT ==========
-if WEBHOOK_URL:
-    bot = telebot.TeleBot(BOT_TOKEN)
-    bot.remove_webhook()
-    time.sleep(1)
-    bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-else:
-    bot = telebot.TeleBot(BOT_TOKEN)
+# Initialize bot once - use either webhook OR polling, not both
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # ========== LOGGING ==========
 logging.basicConfig(
@@ -322,6 +318,15 @@ def stats_api():
         "active_sessions": len([uid for uid, data in user_data.items() if data.get('state')]),
         "timestamp": datetime.now().isoformat()
     })
+
+app.route('/ping')
+def ping():
+    return jsonify({"status": "pong", "time": datetime.now().isoformat()})
+
+@app.route('/ping1')
+def ping1():
+    return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
+
 
 @app.route('/users')
 def users_api():
@@ -1160,6 +1165,29 @@ def handle_text(message):
     else:
         bot.reply_to(message, "👋 Welcome! Type /start to see instructions or /swap to start a face swap!")
 
+# ========== MAIN FUNCTION ==========
+def run_bot():
+    """Run the bot based on configuration"""
+    if WEBHOOK_URL:
+        # Use webhook mode
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+        logger.info(f"Webhook set to: {WEBHOOK_URL}/webhook")
+    else:
+        # Use polling mode
+        logger.info("Starting bot in polling mode...")
+        bot.infinity_polling(timeout=30, long_polling_timeout=10)
+
+def run_flask():
+    """Run Flask app"""
+    app.run(
+        host='0.0.0.0',
+        port=BOT_PORT,
+        debug=False,
+        use_reloader=False
+    )
+
 # ========== START BOT ==========
 if __name__ == '__main__':
     print("=" * 60)
@@ -1195,38 +1223,34 @@ if __name__ == '__main__':
     print("💰 Credit change krne wale ki mkb")
     print("=" * 60)
     
-    # Start Flask in background
-    flask_thread = threading.Thread(
-        target=lambda: app.run(
-            host='0.0.0.0',
-            port=BOT_PORT,
-            debug=False,
-            use_reloader=False
-        ),
-        daemon=True
-    )
-    flask_thread.start()
-    
-    # Wait for Flask to start
-    time.sleep(2)
-    
-    # Start bot
+    # Choose mode based on environment
     if WEBHOOK_URL:
-        print(f"🌐 Using webhook: {WEBHOOK_URL}")
-        print(f"✅ Webhook set successfully!")
+        print(f"🌐 Using webhook mode")
+        print(f"✅ Webhook URL: {WEBHOOK_URL}")
+        
+        # Start Flask in main thread
+        print("🚀 Starting Flask server...")
+        run_flask()
     else:
         print("📡 Using polling mode")
-        bot_thread = threading.Thread(target=lambda: bot.polling(non_stop=True), daemon=True)
-        bot_thread.start()
-        print("✅ Bot polling started!")
-    
-    print("🎯 Bot is ready! Use /start in Telegram to begin.")
-    print(f"🌐 API available at: http://localhost:{BOT_PORT}")
-    print("=" * 60)
-    
-    # Keep main thread alive
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        print("\n🛑 Bot stopped.")
+        
+        # Start Flask in background thread
+        flask_thread = threading.Thread(
+            target=run_flask,
+            daemon=True
+        )
+        flask_thread.start()
+        
+        # Wait for Flask to start
+        time.sleep(3)
+        
+        # Start bot in main thread
+        print("🚀 Starting Telegram bot...")
+        try:
+            run_bot()
+        except KeyboardInterrupt:
+            print("\n🛑 Bot stopped by user.")
+        except Exception as e:
+            logger.error(f"Bot error: {e}")
+            print(f"❌ Bot error: {e}")
+            sys.exit(1)
