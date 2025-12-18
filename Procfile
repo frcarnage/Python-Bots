@@ -1,1 +1,1 @@
-web: python coordinator.py
+web: python main.py
