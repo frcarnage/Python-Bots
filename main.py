@@ -6,13 +6,14 @@ from telebot import types
 import time
 import sqlite3
 import json
-from datetime import datetime
-from flask import Flask, jsonify, request
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request, render_template_string
 import logging
 import threading
 import csv
 import io
 import sys
+import hashlib
 
 # ========== CONFIGURATION ==========
 BOT_TOKEN = "8522048948:AAGSCayCSZZF_6z2nHcGjVC7B64E3C9u6F8"
@@ -24,1281 +25,894 @@ ADMIN_ID = 7575087826
 BANNED_USERS = set()
 
 # ========== CHANNEL VERIFICATION ==========
-REQUIRED_CHANNEL = "@botupdates_2"  # Channel username
+REQUIRED_CHANNEL = "@botupdates_2"
 
 # ========== FACE SWAP CONFIG ==========
 FACE_SWAP_API_TOKEN = "0.ufDEMbVMT7mc9_XLsFDSK5CQqdj9Cx_Zjww0DevIvXN5M4fXQr3B9YtPdGkKAHjXBK6UC9rFcEbZbzCfkxxgmdTYV8iPzTby0C03dTKv5V9uXFYfwIVlqwNbIsfOK_rLRHIPB31bQ0ijSTEd-lLbllf3MkEcpkEZFFmmq8HMAuRuliCXFEdCwEB1HoYSJtvJEmDIVsooU3gYdrCm5yOJ8_lZ4DiHCSvy7P8-YxwJKkapJNCMUCFIfJbWDkDzvh8DGPyTRoHbURX8kClfImmPrGcqlfd7kkoNRcudS25IbNf1CGBsh8V96MtEhnTZvOpZfnp5dpV7MfgwOgvx7hUazUaC_wxQE63Aa0uOPuGvJ70BNrmeZIIrY9roD1Koj316L4g2BZ_LLZZF11wcrNNon8UXB0iVudiNCJyDQCxLUmblXUpt4IUvRoiOqXBNtWtLqY0su0ieVB0jjyDf_-zs7wc8WQ_jqp-NsTxgKOgvZYWV6Elz_lf4cNxGHZJ5BdcyLEoRBH3cksvwoncmYOy5Ulco22QT-x2z06xVFBZYZMVulxAcmvQemKfSFKsNaDxwor35p-amn9Vevhyb-GzA_oIoaTmc0fVXSshax2rdFQHQms86fZ_jkTieRpyIuX0mI3C5jLGIiOXzWxNgax9eZeQstYjIh8BIdMiTIUHfyKVTgtoLbK0hjTUTP0xDlCLnOt5qHdwe_iTWedBsswAJWYdtIxw0YUfIU22GMYrJoekOrQErawNlU5yT-LhXquBQY3EBtEup4JMWLendSh68d6HqjN2T3sAfVw0nY5jg7_5LJwj5gqEk57devNN8GGhogJpfdGzYoNGja22IZIuDnPPmWTpGx4VcLOLknSHrzio.tXUN6eooS69z3QtBp-DY1g.d882822dfe05be2b36ed1950554e1bac753abfe304a289adc4289b3f0d517356"
 
 # ========== FLASK APP ==========
 app = Flask(__name__)
-
-# ========== TELEGRAM BOT ==========
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ========== LOGGING ==========
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== DATABASE SETUP ==========
+# ========== TRACKING ==========
+active_swaps = {}  # Progress tracking
+user_data = {}
+WAITING_FOR_SOURCE = 1
+WAITING_FOR_TARGET = 2
+
+# ========== DATABASE INIT ==========
 def init_database():
-    """Initialize SQLite database"""
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
+    c = conn.cursor()
     
-    # Users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_active TIMESTAMP,
-            is_banned INTEGER DEFAULT 0,
-            verified INTEGER DEFAULT 0,
-            swaps_count INTEGER DEFAULT 0,
-            successful_swaps INTEGER DEFAULT 0,
-            failed_swaps INTEGER DEFAULT 0
-        )
-    ''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT,
+        join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_active TIMESTAMP,
+        is_banned INTEGER DEFAULT 0, verified INTEGER DEFAULT 0,
+        swaps_count INTEGER DEFAULT 0, successful_swaps INTEGER DEFAULT 0, 
+        failed_swaps INTEGER DEFAULT 0, data_hash TEXT)''')
     
-    # Swaps history table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS swaps_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            swap_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status TEXT,
-            processing_time REAL,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
+    c.execute('''CREATE TABLE IF NOT EXISTS swaps_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, 
+        swap_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT,
+        processing_time REAL, result_path TEXT, is_favorite INTEGER DEFAULT 0,
+        is_reviewed INTEGER DEFAULT 0, nsfw_detected INTEGER DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES users (user_id))''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER,
+        reported_swap_id INTEGER, reason TEXT, 
+        report_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status TEXT DEFAULT 'pending', admin_notes TEXT,
+        FOREIGN KEY (reporter_id) REFERENCES users (user_id),
+        FOREIGN KEY (reported_swap_id) REFERENCES swaps_history (id))''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS favorites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, swap_id INTEGER,
+        saved_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (user_id),
+        FOREIGN KEY (swap_id) REFERENCES swaps_history (id))''')
     
     conn.commit()
-    conn.close()
-    
-    # Load banned users
-    conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
-    for row in cursor.fetchall():
+    c.execute('SELECT user_id FROM users WHERE is_banned = 1')
+    for row in c.fetchall():
         BANNED_USERS.add(row[0])
     conn.close()
 
 init_database()
 
-# ========== USER DATA FOR FACE SWAP ==========
-user_data = {}
-WAITING_FOR_SOURCE = 1
-WAITING_FOR_TARGET = 2
+# ========== UTILITIES ==========
+def encrypt_data(data):
+    return hashlib.sha256(str(data).encode()).hexdigest()
 
-# ========== USER MANAGEMENT FUNCTIONS ==========
+def generate_progress_bar(percent):
+    filled = int(percent / 10)
+    return "█" * filled + "░" * (10 - filled)
+
+def estimate_time(start_time, progress):
+    if progress == 0:
+        return "Calculating..."
+    elapsed = time.time() - start_time
+    total = elapsed / (progress / 100)
+    remaining = total - elapsed
+    return f"{int(remaining)}s" if remaining < 60 else f"{int(remaining/60)}m {int(remaining%60)}s"
+
+# ========== DATABASE FUNCTIONS ==========
 def register_user(user_id, username, first_name, last_name):
-    """Register or update user in database"""
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT OR REPLACE INTO users 
-        (user_id, username, first_name, last_name, last_active)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ''', (user_id, username, first_name, last_name))
-    
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+    is_new = c.fetchone() is None
+    data_hash = encrypt_data(f"{user_id}{username}{first_name}{last_name}")
+    c.execute('''INSERT OR REPLACE INTO users 
+        (user_id, username, first_name, last_name, last_active, data_hash)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)''',
+        (user_id, username, first_name, last_name, data_hash))
     conn.commit()
     conn.close()
-    
-    # Check if new user and notify admin
-    if is_new_user(user_id):
+    if is_new:
         notify_admin_new_user(user_id, username, first_name, last_name)
 
-def is_new_user(user_id):
-    """Check if user is new"""
-    conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (user_id,))
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count == 0
-
-def notify_admin_new_user(user_id, username, first_name, last_name):
-    """Notify admin about new user"""
+def notify_admin_new_user(uid, uname, fname, lname):
     try:
-        total_users = get_total_users()
-        
-        message = f"""👤 NEW USER REGISTERED
+        msg = f"""🎉 <b>NEW USER</b>
 
-━━━━━━━━━━━━━━━━━━
-🆔 User ID: {user_id}
-👤 Username: @{username or 'N/A'}
-📛 Name: {first_name} {last_name or ''}
-🕐 Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-📊 Total Users: {total_users}
-━━━━━━━━━━━━━━━━━━
-
-Admin Commands:
-/ban {user_id} - Ban user
-/users - List all users
-/botstatus - Check bot status"""
-        
-        bot.send_message(ADMIN_ID, message)
-    except Exception as e:
-        logger.error(f"Admin notification error: {e}")
+🆔 ID: <code>{uid}</code>
+👤 @{uname or 'N/A'}
+📛 {fname} {lname or ''}
+📊 Total: {get_total_users()}"""
+        bot.send_message(ADMIN_ID, msg, parse_mode='HTML')
+    except: pass
 
 def get_total_users():
-    """Get total registered users"""
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM users')
-    count = cursor.fetchone()[0]
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM users')
+    count = c.fetchone()[0]
     conn.close()
     return count
 
 def get_active_users_count(days=7):
-    """Get active users in last X days"""
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    
-    # FIXED: Proper SQLite parameter binding syntax
-    query = f"""
-        SELECT COUNT(*) FROM users 
-        WHERE last_active >= datetime('now', '-{days} days')
-    """
-    cursor.execute(query)
-    count = cursor.fetchone()[0]
+    c = conn.cursor()
+    c.execute(f"SELECT COUNT(*) FROM users WHERE last_active >= datetime('now', '-{days} days')")
+    count = c.fetchone()[0]
     conn.close()
     return count
 
-def ban_user(user_id):
-    """Ban a user"""
+def ban_user(uid):
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (uid,))
     conn.commit()
     conn.close()
-    BANNED_USERS.add(user_id)
-    logger.info(f"User {user_id} banned")
+    BANNED_USERS.add(uid)
 
-def unban_user(user_id):
-    """Unban a user"""
+def unban_user(uid):
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (uid,))
     conn.commit()
     conn.close()
-    if user_id in BANNED_USERS:
-        BANNED_USERS.remove(user_id)
-    logger.info(f"User {user_id} unbanned")
+    BANNED_USERS.discard(uid)
 
 def get_all_users():
-    """Get all users with details"""
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT user_id, username, first_name, last_name, 
-               join_date, last_active, is_banned, verified,
-               swaps_count, successful_swaps, failed_swaps
-        FROM users 
-        ORDER BY join_date DESC
-    ''')
-    users = cursor.fetchall()
+    c = conn.cursor()
+    c.execute('''SELECT user_id, username, first_name, last_name, join_date, last_active,
+        is_banned, verified, swaps_count, successful_swaps, failed_swaps FROM users 
+        ORDER BY join_date DESC''')
+    users = c.fetchall()
     conn.close()
     return users
 
-def update_user_stats(user_id, success=True):
-    """Update user swap statistics"""
+def update_user_stats(uid, success=True):
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    
+    c = conn.cursor()
     if success:
-        cursor.execute('''
-            UPDATE users SET 
-            swaps_count = swaps_count + 1,
-            successful_swaps = successful_swaps + 1,
-            last_active = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        ''', (user_id,))
+        c.execute('''UPDATE users SET swaps_count = swaps_count + 1,
+            successful_swaps = successful_swaps + 1, last_active = CURRENT_TIMESTAMP
+            WHERE user_id = ?''', (uid,))
     else:
-        cursor.execute('''
-            UPDATE users SET 
-            swaps_count = swaps_count + 1,
-            failed_swaps = failed_swaps + 1,
-            last_active = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-        ''', (user_id,))
-    
+        c.execute('''UPDATE users SET swaps_count = swaps_count + 1,
+            failed_swaps = failed_swaps + 1, last_active = CURRENT_TIMESTAMP
+            WHERE user_id = ?''', (uid,))
     conn.commit()
     conn.close()
 
-def add_swap_history(user_id, status, processing_time):
-    """Add swap to history"""
+def add_swap_history(uid, status, proc_time, result_path=None, nsfw=False):
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO swaps_history (user_id, status, processing_time)
-        VALUES (?, ?, ?)
-    ''', (user_id, status, processing_time))
+    c = conn.cursor()
+    c.execute('''INSERT INTO swaps_history 
+        (user_id, status, processing_time, result_path, nsfw_detected)
+        VALUES (?, ?, ?, ?, ?)''', (uid, status, proc_time, result_path, 1 if nsfw else 0))
+    swap_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return swap_id
+
+def add_favorite(uid, swap_id):
+    conn = sqlite3.connect('face_swap_bot.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO favorites (user_id, swap_id) VALUES (?, ?)', (uid, swap_id))
     conn.commit()
     conn.close()
 
-def check_channel_membership(user_id):
-    """Check if user is member of required channel"""
+def get_user_favorites(uid):
+    conn = sqlite3.connect('face_swap_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT s.id, s.result_path, s.swap_date FROM swaps_history s
+        JOIN favorites f ON s.id = f.swap_id WHERE f.user_id = ? 
+        ORDER BY f.saved_date DESC LIMIT 10''', (uid,))
+    favs = c.fetchall()
+    conn.close()
+    return favs
+
+def add_report(reporter_id, swap_id, reason):
+    conn = sqlite3.connect('face_swap_bot.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO reports (reporter_id, reported_swap_id, reason)
+        VALUES (?, ?, ?)''', (reporter_id, swap_id, reason))
+    conn.commit()
+    conn.close()
+
+def check_channel_membership(uid):
     try:
-        # Fix channel name - remove @ if present
-        channel_name = REQUIRED_CHANNEL.replace('@', '')
-        chat_member = bot.get_chat_member(channel_name, user_id)
-        return chat_member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        logger.error(f"Channel check error: {e}")
-        # Return True to allow testing if channel doesn't exist
-        return True  # Changed to True for testing
+        member = bot.get_chat_member(REQUIRED_CHANNEL.replace('@', ''), uid)
+        return member.status in ['member', 'administrator', 'creator']
+    except:
+        return True
 
-def verify_user(user_id):
-    """Verify user and update database"""
+def verify_user(uid):
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET verified = 1 WHERE user_id = ?', (user_id,))
+    c = conn.cursor()
+    c.execute('UPDATE users SET verified = 1 WHERE user_id = ?', (uid,))
     conn.commit()
     conn.close()
 
-# ========== FLASK ENDPOINTS ==========
+# ========== FLASK ROUTES ==========
+HTML = '''<!DOCTYPE html><html><head><title>Face Swap Bot</title><style>
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;
+background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;
+display:flex;justify-content:center;align-items:center;padding:20px}
+.container{background:#fff;border-radius:20px;padding:40px;max-width:600px;width:100%;
+box-shadow:0 20px 60px rgba(0,0,0,0.3)}h1{color:#667eea;text-align:center;margin-bottom:30px}
+.box{background:#f8f9fa;border-radius:10px;padding:20px;margin:15px 0}
+.item{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #e0e0e0}
+.item:last-child{border-bottom:none}.label{font-weight:600;color:#555}
+.value{color:#667eea;font-weight:700}.badge{display:inline-block;padding:5px 15px;
+border-radius:20px;font-size:0.85em;font-weight:600}
+.badge-success{background:#d4edda;color:#155724}
+.footer{text-align:center;margin-top:30px;color:#999;font-size:0.85em}
+</style></head><body><div class="container"><h1>🤖 Face Swap Bot</h1>
+<div class="box"><div class="item"><span class="label">Status</span>
+<span class="badge badge-success">{{status}}</span></div>
+<div class="item"><span class="label">Total Users</span><span class="value">{{total_users}}</span></div>
+<div class="item"><span class="label">Active (24h)</span><span class="value">{{active_users}}</span></div>
+<div class="item"><span class="label">Total Swaps</span><span class="value">{{total_swaps}}</span></div>
+<div class="item"><span class="label">Success Rate</span><span class="value">{{success_rate}}%</span></div>
+</div><div class="footer"><p>Created by @PokiePy | v3.0</p></div></div></body></html>'''
+
 @app.route('/')
 def home():
-    return jsonify({
-        "status": "running",
-        "service": "Face Swap Bot",
-        "version": "2.0",
-        "creator": "@PokiePy",
-        "admin_id": ADMIN_ID,
-        "endpoints": {
-            "/": "This page",
-            "/health": "Health check",
-            "/stats": "Bot statistics",
-            "/users": "User statistics",
-            "/ping": "Simple ping endpoint",
-            "/ping1": "Another ping endpoint"
-        },
-        "features": ["Face Swap", "Admin Controls", "Channel Verification", "User Management"]
-    })
-
-@app.route('/health')
-def health_check():
-    try:
-        return jsonify({
-            "status": "healthy",
-            "bot": "running",
-            "database": "connected",
-            "total_users": get_total_users(),
-            "active_users_24h": get_active_users_count(1),
-            "banned_users": len(BANNED_USERS),
-            "timestamp": datetime.now().isoformat()
-        }), 200
-    except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
-@app.route('/stats')
-def stats_api():
     try:
         conn = sqlite3.connect('face_swap_bot.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) FROM swaps_history')
-        total_swaps = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
-        successful_swaps = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
-        failed_swaps = cursor.fetchone()[0]
-        
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM swaps_history')
+        total = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+        success = c.fetchone()[0]
         conn.close()
-        
-        success_rate = (successful_swaps / max(1, total_swaps)) * 100 if total_swaps > 0 else 0
-        
-        return jsonify({
-            "total_users": get_total_users(),
-            "active_users_24h": get_active_users_count(1),
-            "banned_users": len(BANNED_USERS),
-            "verified_users": len([u for u in get_all_users() if u[7] == 1]),
-            "swap_statistics": {
-                "total_swaps": total_swaps,
-                "successful_swaps": successful_swaps,
-                "failed_swaps": failed_swaps,
-                "success_rate": round(success_rate, 2)
-            },
-            "active_sessions": len([uid for uid, data in user_data.items() if data.get('state')]),
-            "timestamp": datetime.now().isoformat()
-        })
+        rate = round((success / max(1, total)) * 100, 1)
+        return render_template_string(HTML, status="ONLINE", total_users=get_total_users(),
+            active_users=get_active_users_count(1), total_swaps=total, success_rate=rate)
+    except:
+        return render_template_string(HTML, status="ONLINE", total_users=0,
+            active_users=0, total_swaps=0, success_rate=0)
+
+@app.route('/health/hunter')
+def health_hunter():
+    try:
+        return jsonify({"status": "healthy", "service": "Face Swap Bot", "version": "3.0",
+            "bot": "running", "database": "connected", "metrics": {
+                "total_users": get_total_users(), "active_24h": get_active_users_count(1),
+                "active_7d": get_active_users_count(7), "banned": len(BANNED_USERS),
+                "active_swaps": len(active_swaps)}, "timestamp": datetime.now().isoformat()}), 200
     except Exception as e:
-        logger.error(f"Stats API error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/ping')
-def ping():
-    return jsonify({"status": "pong", "time": datetime.now().isoformat()})
+@app.route('/stats/hunter')
+def stats_hunter():
+    try:
+        conn = sqlite3.connect('face_swap_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM swaps_history')
+        total = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+        success = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+        failed = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM reports WHERE status = "pending"')
+        reports = c.fetchone()[0]
+        c.execute('SELECT COUNT(*) FROM favorites')
+        favs = c.fetchone()[0]
+        c.execute('SELECT AVG(processing_time) FROM swaps_history WHERE status = "success"')
+        avg = c.fetchone()[0] or 0
+        conn.close()
+        rate = round((success / max(1, total)) * 100, 2)
+        return jsonify({"users": {"total": get_total_users(), "active_24h": get_active_users_count(1),
+            "active_7d": get_active_users_count(7), "banned": len(BANNED_USERS)},
+            "swaps": {"total": total, "successful": success, "failed": failed,
+            "success_rate": rate, "avg_time": round(avg, 2), "active": len(active_swaps)},
+            "engagement": {"favorites": favs, "pending_reports": reports},
+            "timestamp": datetime.now().isoformat()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/ping1')
-def ping1():
-    return jsonify({"status": "pong1", "time": datetime.now().isoformat()})
-
-@app.route('/users')
-def users_api():
+@app.route('/users/hunter')
+def users_hunter():
     try:
         users = get_all_users()
-        user_list = []
-        
-        for user in users:
-            user_list.append({
-                "user_id": user[0],
-                "username": user[1],
-                "first_name": user[2],
-                "last_name": user[3],
-                "join_date": user[4],
-                "last_active": user[5],
-                "is_banned": bool(user[6]),
-                "is_verified": bool(user[7]),
-                "swaps_count": user[8],
-                "successful_swaps": user[9],
-                "failed_swaps": user[10]
-            })
-        
-        return jsonify({
-            "total_users": len(user_list),
-            "users": user_list
-        })
+        user_list = [{"user_id": u[0], "username": u[1], "name": f"{u[2]} {u[3] or ''}".strip(),
+            "joined": u[4], "last_active": u[5], "banned": bool(u[6]), "verified": bool(u[7]),
+            "stats": {"total": u[8], "successful": u[9], "failed": u[10]}} for u in users]
+        return jsonify({"total": len(user_list), "users": user_list,
+            "timestamp": datetime.now().isoformat()})
     except Exception as e:
-        logger.error(f"Users API error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Telegram webhook endpoint"""
     if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
+        update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         bot.process_new_updates([update])
         return ''
     return 'Bad request', 400
 
-# ========== TELEGRAM COMMANDS ==========
+# ========== BOT HANDLERS ==========
 @bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    
-    # Check if banned
-    if user_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
+def send_welcome(msg):
+    uid = msg.from_user.id
+    if uid in BANNED_USERS:
+        bot.reply_to(msg, "🚫 You are banned", parse_mode='HTML')
         return
-    
-    # Register user
-    register_user(
-        user_id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
-    )
-    
-    # Check channel membership
-    if not check_channel_membership(user_id):
-        # FIXED: Removed problematic Markdown characters
-        welcome_text = f"""👋 Welcome to Face Swap Bot!
-
-To use this bot, you must join our updates channel:
-
-📢 Channel: {REQUIRED_CHANNEL}
-
-Steps:
-1. Click the button below to join the channel
-2. Come back and click '✅ I Have Joined'
-3. Start using the bot!
-
-Note: The bot needs to verify your membership."""
-        
+    register_user(uid, msg.from_user.username, msg.from_user.first_name, msg.from_user.last_name)
+    if not check_channel_membership(uid):
+        txt = f"""👋 <b>Welcome!</b>\n\n📢 Join: {REQUIRED_CHANNEL}\n\n<b>Steps:</b>
+1️⃣ Click Join Channel\n2️⃣ Click Verify"""
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}"))
-        markup.add(types.InlineKeyboardButton("✅ I Have Joined", callback_data="verify_join"))
-        
-        try:
-            bot.reply_to(message, welcome_text, reply_markup=markup)
-        except Exception as e:
-            # Fallback without Markdown
-            bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode=None)
+        markup.add(types.InlineKeyboardButton("📢 Join", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}"))
+        markup.add(types.InlineKeyboardButton("✅ Verify", callback_data="verify_join"))
+        bot.reply_to(msg, txt, reply_markup=markup, parse_mode='HTML')
     else:
-        verify_user(user_id)
-        show_main_menu(message)
+        verify_user(uid)
+        show_main_menu(msg)
 
-def show_main_menu(message):
-    welcome_text = """👋 Welcome to Face Swap Bot! 👋
+def show_main_menu(msg):
+    txt = """✨ <b>Face Swap Bot</b> ✨\n\n🎭 <b>Features:</b>
+• Swap faces in photos
+• Save favorites
+• View history\n\n📋 <b>Commands:</b>
+/swap - Start swapping
+/mystats - Your stats
+/favorites - Saved swaps
+/history - Recent swaps
+/cancel - Cancel swap
+/report - Report content\n\n💡 Use clear, front-facing photos!\n\nBy @PokiePy"""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🎭 Start", callback_data="start_swap"))
+    markup.add(types.InlineKeyboardButton("📊 Stats", callback_data="my_stats"))
+    bot.reply_to(msg, txt, reply_markup=markup, parse_mode='HTML')
 
-I'm created by @PokiePy. I can swap faces between two photos!
-
-How to use:
-1. Send me the first photo (face to use as source)
-2. Send me the second photo (face to replace)
-3. I'll process and send you the result!
-
-Commands:
-/start - Show this message
-/swap - Start a new face swap
-/status - Check bot status
-/mystats - Your statistics
-
-Note: Send clear, front-facing photos for best results! 😊"""
-    bot.reply_to(message, welcome_text, parse_mode=None)
-
-@bot.callback_query_handler(func=lambda call: call.data == "verify_join")
+@bot.callback_query_handler(func=lambda c: c.data == "verify_join")
 def verify_callback(call):
-    user_id = call.from_user.id
-    
-    if check_channel_membership(user_id):
-        verify_user(user_id)
-        bot.answer_callback_query(call.id, "✅ Verification successful! You can now use the bot.")
+    if check_channel_membership(call.from_user.id):
+        verify_user(call.from_user.id)
+        bot.answer_callback_query(call.id, "✅ Verified!")
+        bot.delete_message(call.message.chat.id, call.message.message_id)
         show_main_menu(call.message)
     else:
-        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Join first!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda c: c.data == "start_swap")
+def start_swap_cb(call):
+    start_swap(call.message)
+
+@bot.callback_query_handler(func=lambda c: c.data == "my_stats")
+def stats_cb(call):
+    my_stats(call.message)
 
 @bot.message_handler(commands=['swap'])
-def start_swap(message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    
-    if user_id in BANNED_USERS:
-        bot.reply_to(message, "🚫 You are banned from using this bot.")
+def start_swap(msg):
+    uid = msg.from_user.id
+    cid = msg.chat.id
+    if uid in BANNED_USERS:
+        bot.reply_to(msg, "🚫 Banned")
         return
-    
-    # Check if user is verified
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT verified FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
+    c = conn.cursor()
+    c.execute('SELECT verified FROM users WHERE user_id = ?', (uid,))
+    res = c.fetchone()
     conn.close()
-    
-    if not result or result[0] == 0:
-        if not check_channel_membership(user_id):
-            bot.reply_to(message, f"❌ Please join {REQUIRED_CHANNEL} first to use the bot!")
+    if not res or res[0] == 0:
+        if not check_channel_membership(uid):
+            bot.reply_to(msg, f"❌ Join {REQUIRED_CHANNEL} first!")
             return
-    
-    user_data[chat_id] = {'state': WAITING_FOR_SOURCE}
-    bot.reply_to(message, "📸 Step 1: Send me the first photo (the face you want to use).\n\nMake sure it's a clear front-facing photo!", parse_mode=None)
+    user_data[cid] = {'state': WAITING_FOR_SOURCE, 'user_id': uid}
+    txt = """🎭 <b>Face Swap Started!</b>\n\n📸 <b>Step 1/2:</b> Send the first photo
+(The face you want to use)\n\n💡 <b>Tips:</b>
+✓ Clear, front-facing
+✓ Good lighting
+✓ Single person\n\nType /cancel to stop"""
+    bot.reply_to(msg, txt, parse_mode='HTML')
 
-@bot.message_handler(commands=['status'])
-def bot_status(message):
-    active_sessions = len([uid for uid, data in user_data.items() if data.get('state')])
-    total_users = get_total_users()
-    active_users = get_active_users_count(1)
-    
-    status_text = f"""🤖 Bot Status
-
-Active Sessions: {active_sessions}
-Total Users: {total_users}
-Active Users (24h): {active_users}
-Face Swap API: ✅ Connected
-
-Your Status: {'Processing...' if message.chat.id in user_data and user_data[message.chat.id].get('state') is None else 'Ready'}
-Step: {get_user_step(message.chat.id)}
-
-Type /swap to start a new face swap!"""
-    
-    bot.reply_to(message, status_text, parse_mode=None)
+@bot.message_handler(commands=['cancel'])
+def cancel_swap(msg):
+    if msg.chat.id in user_data:
+        del user_data[msg.chat.id]
+        bot.reply_to(msg, "❌ <b>Swap Cancelled</b>\n\nType /swap to start again", parse_mode='HTML')
+    else:
+        bot.reply_to(msg, "No active swap to cancel")
 
 @bot.message_handler(commands=['mystats'])
-def my_stats(message):
-    user_id = message.from_user.id
-    
+def my_stats(msg):
+    uid = msg.from_user.id
     conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT swaps_count, successful_swaps, failed_swaps, join_date
-        FROM users WHERE user_id = ?
-    ''', (user_id,))
-    result = cursor.fetchone()
+    c = conn.cursor()
+    c.execute('''SELECT swaps_count, successful_swaps, failed_swaps, join_date
+        FROM users WHERE user_id = ?''', (uid,))
+    res = c.fetchone()
     conn.close()
+    if res:
+        total, success, failed, joined = res
+        rate = round((success / max(1, total)) * 100, 1)
+        txt = f"""📊 <b>Your Statistics</b>\n\n🔄 Total Swaps: {total}
+✅ Successful: {success}
+❌ Failed: {failed}
+📈 Success Rate: {rate}%
+📅 Joined: {joined[:10] if joined else 'Unknown'}\n\n🏆 Keep swapping!"""
+    else:
+        txt = "📊 No stats yet. Start with /swap"
+    bot.reply_to(msg, txt, parse_mode='HTML')
+
+@bot.message_handler(commands=['favorites'])
+def show_favorites(msg):
+    uid = msg.from_user.id
+    favs = get_user_favorites(uid)
+    if not favs:
+        bot.reply_to(msg, "⭐ No favorites yet!\n\nSave swaps by clicking 'Save' after each swap.")
+        return
+    txt = f"⭐ <b>Your Favorites ({len(favs)})</b>\n\n"
+    for i, (sid, path, date) in enumerate(favs, 1):
+        txt += f"{i}. Swap #{sid} - {date[:16]}\n"
+    bot.reply_to(msg, txt, parse_mode='HTML')
+
+@bot.message_handler(commands=['history'])
+def show_history(msg):
+    uid = msg.from_user.id
+    conn = sqlite3.connect('face_swap_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT id, status, swap_date FROM swaps_history 
+        WHERE user_id = ? ORDER BY swap_date DESC LIMIT 10''', (uid,))
+    hist = c.fetchall()
+    conn.close()
+    if not hist:
+        bot.reply_to(msg, "📜 No history yet")
+        return
+    txt = f"📜 <b>Recent Swaps ({len(hist)})</b>\n\n"
+    for sid, status, date in hist:
+        emoji = "✅" if status == "success" else "❌"
+        txt += f"{emoji} Swap #{sid} - {date[:16]}\n"
+    bot.reply_to(msg, txt, parse_mode='HTML')
+
+@bot.message_handler(commands=['report'])
+def report_content(msg):
+    txt = """🚨 <b>Report Content</b>\n\nTo report inappropriate content:
+\n1. Reply to this message with swap ID
+2. Include reason for report\n\nFormat: <code>Swap_ID Reason</code>
+Example: <code>123 Inappropriate content</code>"""
+    bot.reply_to(msg, txt, parse_mode='HTML')
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(msg):
+    cid = msg.chat.id
+    uid = msg.from_user.id
+    if uid in BANNED_USERS:
+        bot.reply_to(msg, "🚫 Banned")
+        return
+    fid = msg.photo[-1].file_id
+    finfo = bot.get_file(fid)
+    furl = f"https://api.telegram.org/file/bot{bot.token}/{finfo.file_path}"
+    img = requests.get(furl).content
     
-    if result:
-        swaps_count, successful, failed, join_date = result
-        success_rate = (successful / max(1, swaps_count)) * 100
+    if cid not in user_data:
+        user_data[cid] = {'state': WAITING_FOR_TARGET, 'source': img, 'start_time': time.time(), 'user_id': uid}
+        bot.reply_to(msg, "✅ <b>First photo received!</b>\n\n📸 <b>Step 2/2:</b> Send second photo\n(Face to replace)", parse_mode='HTML')
+    elif user_data[cid]['state'] == WAITING_FOR_TARGET:
+        user_data[cid]['target'] = img
+        user_data[cid]['state'] = None
         
-        stats_text = f"""📊 Your Statistics
+        # Show progress
+        active_swaps[cid] = {'progress': 0, 'status': 'Initializing...', 'start_time': time.time()}
+        progress_msg = bot.reply_to(msg, "🔄 <b>Processing...</b>\n\n[░░░░░░░░░░] 0%\n⏱️ Est: Calculating...", parse_mode='HTML')
+        
+        # Simulate progress updates
+        for p in [20, 40, 60, 80]:
+            time.sleep(0.5)
+            active_swaps[cid]['progress'] = p
+            bar = generate_progress_bar(p)
+            est = estimate_time(active_swaps[cid]['start_time'], p)
+            bot.edit_message_text(f"🔄 <b>Processing...</b>\n\n[{bar}] {p}%\n⏱️ Est: {est}",
+                cid, progress_msg.message_id, parse_mode='HTML')
+        
+        # API Call
+        src_b64 = base64.b64encode(user_data[cid]['source']).decode()
+        tgt_b64 = base64.b64encode(user_data[cid]['target']).decode()
+        
+        api_url = "https://api.deepswapper.com/swap"
+        data = {'source': src_b64, 'target': tgt_b64,
+            'security': {'token': FACE_SWAP_API_TOKEN, 'type': 'invisible', 'id': 'deepswapper'}}
+        
+        try:
+            resp = requests.post(api_url, json=data, headers={'Content-Type': 'application/json'})
+            proc_time = time.time() - user_data[cid]['start_time']
+            
+            if resp.status_code == 200 and 'result' in resp.json():
+                img_data = base64.b64decode(resp.json()['result'])
+                
+                # Save result
+                os.makedirs('results', exist_ok=True)
+                fname = f"result_{int(time.time())}.png"
+                fpath = os.path.join('results', fname)
+                with open(fpath, 'wb') as f:
+                    f.write(img_data)
+                
+                # Update progress to 100%
+                active_swaps[cid]['progress'] = 100
+                bot.edit_message_text(f"✅ <b>Complete!</b>\n\n[██████████] 100%\n⏱️ Time: {proc_time:.1f}s",
+                    cid, progress_msg.message_id, parse_mode='HTML')
+                time.sleep(1)
+                bot.delete_message(cid, progress_msg.message_id)
+                
+                # Save to history
+                swap_id = add_swap_history(uid, "success", proc_time, fpath)
+                update_user_stats(uid, True)
+                
+                # Send result with options
+                with open(fpath, 'rb') as photo:
+                    markup = types.InlineKeyboardMarkup(row_width=2)
+                    markup.add(
+                        types.InlineKeyboardButton("⭐ Save Favorite", callback_data=f"fav_{swap_id}"),
+                        types.InlineKeyboardButton("🔄 Swap Again", callback_data="start_swap")
+                    )
+                    markup.add(types.InlineKeyboardButton("📊 Compare", callback_data=f"compare_{swap_id}"))
+                    
+                    caption = f"""✨ <b>Face Swap Complete!</b>
 
-Total Swaps: {swaps_count}
-Successful: {successful}
-Failed: {failed}
-Success Rate: {success_rate:.1f}%
-Joined: {join_date[:10] if join_date else 'Unknown'}
+⏱️ Time: {proc_time:.1f}s
+🆔 Swap ID: #{swap_id}
+✅ Status: Success
 
-Channel Status: {'✅ Verified' if check_channel_membership(user_id) else '❌ Not Joined'}
-Bot Status: {'✅ Active' if user_id not in BANNED_USERS else '🚫 Banned'}"""
+<i>Tip: Save to favorites or start a new swap!</i>"""
+                    bot.send_photo(cid, photo, caption=caption, reply_markup=markup, parse_mode='HTML')
+                
+                del user_data[cid]
+                del active_swaps[cid]
+                logger.info(f"Swap completed for {uid} in {proc_time:.2f}s")
+            else:
+                raise Exception("API returned no result")
+                
+        except Exception as e:
+            proc_time = time.time() - user_data[cid]['start_time']
+            bot.edit_message_text("❌ <b>Failed!</b>\n\nTry again with different photos",
+                cid, progress_msg.message_id, parse_mode='HTML')
+            add_swap_history(uid, "failed", proc_time)
+            update_user_stats(uid, False)
+            del user_data[cid]
+            del active_swaps[cid]
+            logger.error(f"Swap failed: {e}")
     else:
-        stats_text = "📊 No statistics available yet."
-    
-    bot.reply_to(message, stats_text, parse_mode=None)
+        bot.reply_to(msg, "⚠️ Complete current swap or /cancel")
 
-def get_user_step(chat_id):
-    if chat_id not in user_data:
-        return "Not started"
-    state = user_data[chat_id].get('state')
-    if state == WAITING_FOR_SOURCE:
-        return "Waiting for first photo"
-    elif state == WAITING_FOR_TARGET:
-        return "Waiting for second photo"
-    elif state is None and 'source' in user_data[chat_id] and 'target' in user_data[chat_id]:
-        return "Processing face swap"
-    else:
-        return "Ready"
+@bot.callback_query_handler(func=lambda c: c.data.startswith('fav_'))
+def add_to_favorites(call):
+    swap_id = int(call.data.split('_')[1])
+    add_favorite(call.from_user.id, swap_id)
+    bot.answer_callback_query(call.id, "⭐ Added to favorites!")
+    bot.edit_message_caption(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        caption=call.message.caption + "\n\n⭐ <b>Saved to Favorites!</b>",
+        parse_mode='HTML'
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('compare_'))
+def compare_images(call):
+    swap_id = int(call.data.split('_')[1])
+    bot.answer_callback_query(call.id, "📊 Comparison feature coming soon!")
 
 # ========== ADMIN COMMANDS ==========
 @bot.message_handler(commands=['users'])
-def list_users(message):
-    """Admin command: List all users with inline buttons"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
+def list_users(msg):
+    if msg.from_user.id != ADMIN_ID:
         return
-    
     users = get_all_users()
-    
     if not users:
-        bot.reply_to(message, "📭 No users registered yet.")
+        bot.reply_to(msg, "📭 No users")
         return
     
-    # Create pagination
     page = 0
-    try:
-        page = int(message.text.split()[1]) if len(message.text.split()) > 1 else 0
-    except:
-        page = 0
-    
     users_per_page = 5
-    start_idx = page * users_per_page
-    end_idx = start_idx + users_per_page
-    page_users = users[start_idx:end_idx]
+    page_users = users[page*users_per_page:(page+1)*users_per_page]
     
-    message_text = f"👥 Registered Users: {len(users)}\n━━━━━━━━━━━━━━━━━━\n"
-    message_text += f"Page {page+1}/{(len(users)-1)//users_per_page + 1}\n\n"
+    txt = f"👥 <b>Users: {len(users)}</b>\n━━━━━━━━━━━━━━━━━━\n"
+    for u in page_users:
+        uid, uname, fname, lname, join, last, banned, verified, total, success, failed = u
+        status = "🔴 BANNED" if banned else "🟢 ACTIVE"
+        txt += f"\n🆔 {uid}\n👤 @{uname or 'N/A'}\n📛 {fname}\n📊 {status}\n🔄 {total} swaps\n━━━━━━━━━━━━\n"
     
-    for user in page_users:
-        user_id, username, first_name, last_name, join_date, last_active, is_banned, verified, swaps_count, successful, failed = user
-        
-        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
-        verified_status = "✅" if verified else "❌"
-        
-        # Calculate activity
-        if last_active:
-            try:
-                if isinstance(last_active, str):
-                    last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S')
-                else:
-                    last_active_time = last_active
-                days_ago = (datetime.now() - last_active_time).days
-                activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
-            except:
-                activity = "Unknown"
+    markup = types.InlineKeyboardMarkup()
+    for u in page_users:
+        uid = u[0]
+        uname = u[1] or f"ID:{uid}"
+        if u[6]:  # banned
+            markup.add(types.InlineKeyboardButton(f"🟢 Unban {uname[:15]}", callback_data=f"unban_{uid}"))
         else:
-            activity = "Never"
-        
-        message_text += f"🆔 {user_id}\n"
-        message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
-        message_text += f"📛 {first_name} {last_name or ''}\n"
-        message_text += f"📅 Joined: {join_date[:10] if join_date else 'Unknown'}\n"
-        message_text += f"🕐 Last: {activity}\n"
-        message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
-        message_text += f"📊 Status: {status}\n"
-        message_text += "━━━━━━━━━━━━━━━━━━\n\n"
+            markup.add(types.InlineKeyboardButton(f"🔴 Ban {uname[:15]}", callback_data=f"ban_{uid}"))
     
-    # Create inline keyboard
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    
-    # Add action buttons for each user on this page
-    for user in page_users:
-        user_id = user[0]
-        username = user[1] or f"ID:{user_id}"
-        is_banned = bool(user[6])
-        
-        if is_banned:
-            markup.add(types.InlineKeyboardButton(
-                f"🟢 Unban {username[:15]}",
-                callback_data=f"admin_unban_{user_id}"
-            ))
-        else:
-            markup.add(types.InlineKeyboardButton(
-                f"🔴 Ban {username[:15]}",
-                callback_data=f"admin_ban_{user_id}"
-            ))
-    
-    # Add pagination buttons
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(types.InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page_{page-1}"))
-    
-    if end_idx < len(users):
-        nav_buttons.append(types.InlineKeyboardButton("Next ➡️", callback_data=f"users_page_{page+1}"))
-    
-    if nav_buttons:
-        markup.add(*nav_buttons)
-    
-    # Add refresh button
-    markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_users"))
-    
+    bot.reply_to(msg, txt, reply_markup=markup, parse_mode='HTML')
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith('ban_'))
+def ban_cb(call):
+    if call.from_user.id != ADMIN_ID:
+        return
+    uid = int(call.data.split('_')[1])
+    ban_user(uid)
+    bot.answer_callback_query(call.id, f"✅ User {uid} banned!")
     try:
-        bot.send_message(ADMIN_ID, message_text, reply_markup=markup, parse_mode=None)
-    except:
-        # Split message if too long
-        chunks = [message_text[i:i+4000] for i in range(0, len(message_text), 4000)]
-        for chunk in chunks[:-1]:
-            bot.send_message(ADMIN_ID, chunk, parse_mode=None)
-        bot.send_message(ADMIN_ID, chunks[-1], parse_mode=None, reply_markup=markup)
+        bot.send_message(uid, "🚫 You have been banned from using this bot.")
+    except: pass
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('users_page_'))
-def users_page_callback(call):
-    """Handle pagination for users list"""
-    page = int(call.data.split('_')[2])
-    users = get_all_users()
-    
-    users_per_page = 5
-    start_idx = page * users_per_page
-    end_idx = start_idx + users_per_page
-    page_users = users[start_idx:end_idx]
-    
-    message_text = f"👥 Registered Users: {len(users)}\n━━━━━━━━━━━━━━━━━━\n"
-    message_text += f"Page {page+1}/{(len(users)-1)//users_per_page + 1}\n\n"
-    
-    for user in page_users:
-        user_id, username, first_name, last_name, join_date, last_active, is_banned, verified, swaps_count, successful, failed = user
-        
-        status = "🔴 BANNED" if is_banned else "🟢 ACTIVE"
-        verified_status = "✅" if verified else "❌"
-        
-        if last_active:
-            try:
-                if isinstance(last_active, str):
-                    last_active_time = datetime.strptime(last_active, '%Y-%m-%d %H:%M:%S')
-                else:
-                    last_active_time = last_active
-                days_ago = (datetime.now() - last_active_time).days
-                activity = f"{days_ago}d ago" if days_ago > 0 else "Today"
-            except:
-                activity = "Unknown"
-        else:
-            activity = "Never"
-        
-        message_text += f"🆔 {user_id}\n"
-        message_text += f"👤 @{username or 'N/A'} {verified_status}\n"
-        message_text += f"📛 {first_name} {last_name or ''}\n"
-        message_text += f"📅 Joined: {join_date[:10] if join_date else 'Unknown'}\n"
-        message_text += f"🕐 Last: {activity}\n"
-        message_text += f"🔄 Swaps: {swaps_count} ({successful}✓/{failed}✗)\n"
-        message_text += f"📊 Status: {status}\n"
-        message_text += "━━━━━━━━━━━━━━━━━━\n\n"
-    
-    # Update inline keyboard
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    
-    for user in page_users:
-        user_id = user[0]
-        username = user[1] or f"ID:{user_id}"
-        is_banned = bool(user[6])
-        
-        if is_banned:
-            markup.add(types.InlineKeyboardButton(
-                f"🟢 Unban {username[:15]}",
-                callback_data=f"admin_unban_{user_id}"
-            ))
-        else:
-            markup.add(types.InlineKeyboardButton(
-                f"🔴 Ban {username[:15]}",
-                callback_data=f"admin_ban_{user_id}"
-            ))
-    
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(types.InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page_{page-1}"))
-    
-    if end_idx < len(users):
-        nav_buttons.append(types.InlineKeyboardButton("Next ➡️", callback_data=f"users_page_{page+1}"))
-    
-    if nav_buttons:
-        markup.add(*nav_buttons)
-    
-    markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="refresh_users"))
-    
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=message_text,
-        reply_markup=markup,
-        parse_mode=None
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_ban_'))
-def admin_ban_callback(call):
-    """Handle ban button click"""
-    user_id = int(call.data.split('_')[2])
-    
+@bot.callback_query_handler(func=lambda c: c.data.startswith('unban_'))
+def unban_cb(call):
     if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
         return
-    
-    ban_user(user_id)
-    bot.answer_callback_query(call.id, f"✅ User {user_id} banned!")
-    
-    # Update the message
-    users_page_callback(call)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_unban_'))
-def admin_unban_callback(call):
-    """Handle unban button click"""
-    user_id = int(call.data.split('_')[2])
-    
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
-        return
-    
-    unban_user(user_id)
-    bot.answer_callback_query(call.id, f"✅ User {user_id} unbanned!")
-    
-    # Update the message
-    users_page_callback(call)
-
-@bot.callback_query_handler(func=lambda call: call.data == "refresh_users")
-def refresh_users_callback(call):
-    """Refresh users list"""
-    list_users(call.message)
-    bot.answer_callback_query(call.id, "✅ Refreshed!")
+    uid = int(call.data.split('_')[1])
+    unban_user(uid)
+    bot.answer_callback_query(call.id, f"✅ User {uid} unbanned!")
+    try:
+        bot.send_message(uid, "✅ Your ban has been lifted!")
+    except: pass
 
 @bot.message_handler(commands=['ban'])
-def ban_user_command(message):
-    """Admin command: Ban a user"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
+def ban_cmd(msg):
+    if msg.from_user.id != ADMIN_ID:
         return
-    
     try:
-        user_id = int(message.text.split()[1])
-        ban_user(user_id)
-        bot.reply_to(message, f"✅ User {user_id} has been banned.")
-        
-        # Notify the banned user
+        uid = int(msg.text.split()[1])
+        ban_user(uid)
+        bot.reply_to(msg, f"✅ User {uid} banned")
         try:
-            bot.send_message(user_id, "🚫 You have been banned from using this bot.")
-        except:
-            pass
-            
-    except (IndexError, ValueError):
-        bot.reply_to(message, "❌ Usage: /ban <user_id>")
+            bot.send_message(uid, "🚫 You are banned")
+        except: pass
+    except:
+        bot.reply_to(msg, "Usage: /ban <user_id>")
 
 @bot.message_handler(commands=['unban'])
-def unban_user_command(message):
-    """Admin command: Unban a user"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
+def unban_cmd(msg):
+    if msg.from_user.id != ADMIN_ID:
         return
-    
     try:
-        user_id = int(message.text.split()[1])
-        unban_user(user_id)
-        bot.reply_to(message, f"✅ User {user_id} has been unbanned.")
-        
-        # Notify the unbanned user
+        uid = int(msg.text.split()[1])
+        unban_user(uid)
+        bot.reply_to(msg, f"✅ User {uid} unbanned")
         try:
-            bot.send_message(user_id, "✅ Your ban has been lifted. You can use the bot again.")
-        except:
-            pass
-            
-    except (IndexError, ValueError):
-        bot.reply_to(message, "❌ Usage: /unban <user_id>")
+            bot.send_message(uid, "✅ Unbanned")
+        except: pass
+    except:
+        bot.reply_to(msg, "Usage: /unban <user_id>")
 
 @bot.message_handler(commands=['botstatus'])
-def bot_status_admin(message):
-    """Admin command: Show detailed bot status"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
+def bot_status_admin(msg):
+    if msg.from_user.id != ADMIN_ID:
         return
     
-    try:
-        # Get database statistics
-        conn = sqlite3.connect('face_swap_bot.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) FROM swaps_history')
-        total_swaps = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
-        successful_swaps = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
-        failed_swaps = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM users WHERE verified = 1')
-        verified_users = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        success_rate = (successful_swaps / max(1, total_swaps)) * 100
-        
-        status_message = f"""🤖 ADMIN BOT STATUS REPORT
+    conn = sqlite3.connect('face_swap_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM swaps_history')
+    total = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "success"')
+    success = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM swaps_history WHERE status = "failed"')
+    failed = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM users WHERE verified = 1')
+    verified = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM reports WHERE status = "pending"')
+    reports = c.fetchone()[0]
+    conn.close()
+    
+    rate = round((success / max(1, total)) * 100, 1)
+    
+    txt = f"""🤖 <b>BOT STATUS REPORT</b>
 
 ━━━━━━━━━━━━━━━━━━
-📊 User Statistics:
-• Total Users: {get_total_users()}
-• Active Users (24h): {get_active_users_count(1)}
-• Verified Users: {verified_users}
-• Banned Users: {len(BANNED_USERS)}
+📊 <b>Users:</b>
+• Total: {get_total_users()}
+• Active (24h): {get_active_users_count(1)}
+• Verified: {verified}
+• Banned: {len(BANNED_USERS)}
 
-🔄 Swap Statistics:
-• Total Swaps: {total_swaps}
-• Successful: {successful_swaps}
-• Failed: {failed_swaps}
-• Success Rate: {success_rate:.1f}%
+🔄 <b>Swaps:</b>
+• Total: {total}
+• Success: {success}
+• Failed: {failed}
+• Rate: {rate}%
 
-📱 Current Sessions:
-• Active Face Swaps: {len([uid for uid, data in user_data.items() if data.get('state')])}
-• Waiting for 1st Photo: {len([uid for uid, data in user_data.items() if data.get('state') == WAITING_FOR_SOURCE])}
-• Waiting for 2nd Photo: {len([uid for uid, data in user_data.items() if data.get('state') == WAITING_FOR_TARGET])}
+📱 <b>Current:</b>
+• Active Swaps: {len(active_swaps)}
+• Sessions: {len(user_data)}
 
-🔧 System Status:
+⚠️ <b>Moderation:</b>
+• Pending Reports: {reports}
+
+🔧 <b>System:</b>
 • Bot: ✅ RUNNING
-• Database: ✅ CONNECTED
-• Face Swap API: ✅ AVAILABLE
-• Channel Check: ✅ ACTIVE
-• Webhook Mode: {'✅ ENABLED' if WEBHOOK_URL else '❌ DISABLED'}
-
-🌐 Endpoints:
-• Health: `/health` endpoint
-• Stats: `/stats` endpoint
-• Users API: `/users` endpoint
-
+• DB: ✅ CONNECTED
+• API: ✅ AVAILABLE
 ━━━━━━━━━━━━━━━━━━
-Admin Commands:
-/users - List all users with buttons
-/ban <id> - Ban user
-/unban <id> - Unban user
-/botstatus - This report
-/stats - Show statistics
-/exportdata - Export user data
-/refreshdb - Refresh database
-/broadcast <msg> - Broadcast message
-━━━━━━━━━━━━━━━━━━
-"""
-        
-        bot.reply_to(message, status_message, parse_mode=None)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error generating status report: {str(e)}")
 
-@bot.message_handler(commands=['stats'])
-def show_stats(message):
-    """Show bot statistics"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
+<b>Commands:</b>
+/users - Manage users
+/ban /unban - User control
+/broadcast - Send message
+/reports - View reports
+/exportdata - Export data"""
+    
+    bot.reply_to(msg, txt, parse_mode='HTML')
+
+@bot.message_handler(commands=['reports'])
+def view_reports(msg):
+    if msg.from_user.id != ADMIN_ID:
         return
     
-    # Get quick stats
-    total_users = get_total_users()
-    active_users = get_active_users_count(1)
-    banned_users = len(BANNED_USERS)
-    active_sessions = len([uid for uid, data in user_data.items() if data.get('state')])
+    conn = sqlite3.connect('face_swap_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT r.id, r.reporter_id, r.reported_swap_id, r.reason, 
+        r.report_date, r.status FROM reports ORDER BY report_date DESC LIMIT 10''')
+    reports = c.fetchall()
+    conn.close()
     
-    stats_text = f"""📈 Quick Statistics
-
-Users:
-• Total: {total_users}
-• Active (24h): {active_users}
-• Banned: {banned_users}
-
-Sessions:
-• Active: {active_sessions}
-
-Channel:
-• Required: {REQUIRED_CHANNEL}
-• Verification: {'✅ Enabled'}
-
-For detailed report, use /botstatus"""
+    if not reports:
+        bot.reply_to(msg, "📭 No reports")
+        return
     
-    bot.reply_to(message, stats_text, parse_mode=None)
+    txt = f"🚨 <b>Reports ({len(reports)})</b>\n\n"
+    for rid, reporter, swap_id, reason, date, status in reports:
+        emoji = "🟡" if status == "pending" else "✅"
+        txt += f"{emoji} Report #{rid}\n👤 Reporter: {reporter}\n🔄 Swap: #{swap_id}\n📝 {reason}\n⏰ {date[:16]}\n━━━━━━━━━━\n\n"
+    
+    bot.reply_to(msg, txt, parse_mode='HTML')
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast_msg(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    
+    txt = msg.text.replace('/broadcast', '', 1).strip()
+    if not txt:
+        bot.reply_to(msg, "Usage: /broadcast Your message")
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("✅ Send", callback_data=f"bcast_yes"),
+        types.InlineKeyboardButton("❌ Cancel", callback_data="bcast_no")
+    )
+    
+    bot.reply_to(msg, f"📢 <b>Broadcast Confirmation</b>\n\n{txt}\n\nRecipients: {get_total_users()} users",
+        reply_markup=markup, parse_mode='HTML')
+
+@bot.callback_query_handler(func=lambda c: c.data == "bcast_yes")
+def confirm_broadcast(call):
+    if call.from_user.id != ADMIN_ID:
+        return
+    
+    txt = call.message.text.split("\n\n")[1].split("\n\nRecipients:")[0]
+    bot.edit_message_text("📢 Sending broadcast...", call.message.chat.id, call.message.message_id)
+    
+    users = get_all_users()
+    sent = failed = 0
+    
+    for u in users:
+        uid = u[0]
+        if uid in BANNED_USERS:
+            continue
+        try:
+            bot.send_message(uid, f"📢 <b>Announcement</b>\n\n{txt}", parse_mode='HTML')
+            sent += 1
+            time.sleep(0.05)
+        except:
+            failed += 1
+    
+    bot.edit_message_text(f"✅ Broadcast Complete!\n\nSent: {sent}\nFailed: {failed}",
+        call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda c: c.data == "bcast_no")
+def cancel_broadcast(call):
+    bot.edit_message_text("❌ Broadcast cancelled", call.message.chat.id, call.message.message_id)
 
 @bot.message_handler(commands=['exportdata'])
-def export_data(message):
-    """Export user data as CSV"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
+def export_data(msg):
+    if msg.from_user.id != ADMIN_ID:
         return
     
     users = get_all_users()
-    
     if not users:
-        bot.reply_to(message, "📭 No user data to export.")
+        bot.reply_to(msg, "📭 No data")
         return
     
-    # Create CSV in memory
     output = io.StringIO()
     writer = csv.writer(output)
+    writer.writerow(['User ID', 'Username', 'First Name', 'Last Name', 'Join Date',
+        'Last Active', 'Banned', 'Verified', 'Total Swaps', 'Successful', 'Failed'])
     
-    # Write header
-    writer.writerow(['User ID', 'Username', 'First Name', 'Last Name', 
-                     'Join Date', 'Last Active', 'Banned', 'Verified',
-                     'Total Swaps', 'Successful', 'Failed'])
+    for u in users:
+        writer.writerow(u[:11])
     
-    # Write data
-    for user in users:
-        writer.writerow(user[:11])  # First 11 columns
-    
-    # Get CSV data
     csv_data = output.getvalue()
     output.close()
     
-    # Send as file
-    bot.send_document(
-        message.chat.id,
-        ('users_export.csv', csv_data.encode('utf-8')),
-        caption=f"📊 User data export ({len(users)} users)"
-    )
+    bot.send_document(msg.chat.id, ('users_export.csv', csv_data.encode('utf-8')),
+        caption=f"📊 User data ({len(users)} users)")
 
-@bot.message_handler(commands=['refreshdb'])
-def refresh_database(message):
-    """Refresh database"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    try:
-        init_database()
-        bot.reply_to(message, "✅ Database refreshed successfully!")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error refreshing database: {str(e)}")
-
-@bot.message_handler(commands=['refreshbot'])
-def refresh_bot(message):
-    """Refresh bot"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    # Clear user data
-    user_data.clear()
-    
-    # Reload banned users
-    conn = sqlite3.connect('face_swap_bot.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM users WHERE is_banned = 1')
-    BANNED_USERS.clear()
-    for row in cursor.fetchall():
-        BANNED_USERS.add(row[0])
-    conn.close()
-    
-    bot.reply_to(message, "✅ Bot refreshed! User data cleared and banned users reloaded.")
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast_message(message):
-    """Broadcast message to all users"""
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "❌ This command is for admins only.")
-        return
-    
-    try:
-        # Extract message text (remove /broadcast command)
-        broadcast_text = message.text.replace('/broadcast', '', 1).strip()
-        
-        if not broadcast_text:
-            bot.reply_to(message, "❌ Please provide a message to broadcast.\nUsage: /broadcast Your message here")
-            return
-        
-        # Confirmation
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("✅ Yes, Send", callback_data=f"confirm_broadcast_{hash(broadcast_text)}"),
-            types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_broadcast")
-        )
-        
-        bot.reply_to(
-            message,
-            f"📢 Broadcast Confirmation\n\nMessage:\n{broadcast_text}\n\nRecipients: All users ({get_total_users()} users)\n\nAre you sure you want to send this broadcast?",
-            reply_markup=markup,
-            parse_mode=None
-        )
-        
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_broadcast_'))
-def confirm_broadcast(call):
-    """Send broadcast to all users"""
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
-        return
-    
-    broadcast_text = call.message.text.split("Message:\n")[1].split("\n\nRecipients:")[0]
-    
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text="📢 Sending Broadcast...\n\nPlease wait, this may take a while.",
-        parse_mode=None
-    )
-    
-    users = get_all_users()
-    sent_count = 0
-    failed_count = 0
-    
-    for user in users:
-        user_id = user[0]
-        
-        # Skip banned users
-        if user_id in BANNED_USERS:
-            continue
-        
-        try:
-            bot.send_message(user_id, f"📢 Announcement from Admin\n\n{broadcast_text}", parse_mode=None)
-            sent_count += 1
-            time.sleep(0.1)  # Rate limiting
-        except Exception as e:
-            failed_count += 1
-            logger.error(f"Failed to send to {user_id}: {e}")
-    
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=f"✅ Broadcast Completed!\n\nSent to: {sent_count} users\nFailed: {failed_count} users\nTotal: {len(users)} users",
-        parse_mode=None
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_broadcast")
-def cancel_broadcast(call):
-    """Cancel broadcast"""
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "❌ Admin only!", show_alert=True)
-        return
-    
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text="❌ Broadcast cancelled.",
-        parse_mode=None
-    )
-
-# ========== FACE SWAP HANDLER ==========
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    try:
-        chat_id = message.chat.id
-        user_id = message.from_user.id
-        
-        # Check if banned
-        if user_id in BANNED_USERS:
-            bot.reply_to(message, "🚫 You are banned from using this bot.")
-            return
-        
-        # Get the photo (highest resolution)
-        file_id = message.photo[-1].file_id
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{bot.token}/{file_info.file_path}"
-        
-        # Download image
-        img_data = requests.get(file_url).content
-        
-        if chat_id not in user_data:
-            # Start new swap session
-            user_data[chat_id] = {
-                'state': WAITING_FOR_TARGET,
-                'source': img_data,
-                'start_time': time.time()
-            }
-            bot.reply_to(message, "✅ Got your first photo!\n\n📸 Step 2: Now send me the second photo (the face you want to replace).", parse_mode=None)
-        else:
-            if user_data[chat_id]['state'] == WAITING_FOR_TARGET:
-                user_data[chat_id]['target'] = img_data
-                user_data[chat_id]['state'] = None
-                
-                bot.reply_to(message, "🔄 Processing face swap...\n\nPlease wait while I swap the faces. This usually takes 10-30 seconds.", parse_mode=None)
-                
-                # Convert images to base64
-                source_base64 = base64.b64encode(user_data[chat_id]['source']).decode('utf-8')
-                target_base64 = base64.b64encode(user_data[chat_id]['target']).decode('utf-8')
-                
-                # Call face swap API
-                api_url = "https://api.deepswapper.com/swap"
-                data = {
-                    'source': source_base64,
-                    'target': target_base64,
-                    'security': {
-                        'token': FACE_SWAP_API_TOKEN,
-                        'type': 'invisible',
-                        'id': 'deepswapper'
-                    }
-                }
-                
-                headers = {'Content-Type': 'application/json'}
-                response = requests.post(api_url, json=data, headers=headers)
-                
-                processing_time = time.time() - user_data[chat_id]['start_time']
-                
-                if response.status_code == 200:
-                    response_data = response.json()
-                    if 'result' in response_data:
-                        image_data = base64.b64decode(response_data['result'])
-                       
-                        # Save to file (optional)
-                        if not os.path.exists('results'):
-                            os.makedirs('results')
-                        
-                        filename = f"result_{int(time.time())}.png"
-                        filepath = os.path.join('results', filename)
-                        
-                        with open(filepath, 'wb') as f:
-                            f.write(image_data)
-                        
-                        # Send result to user
-                        with open(filepath, 'rb') as photo:
-                            bot.send_photo(chat_id, photo, caption="✅ Face swap completed!\n\nType /swap to start another!", parse_mode=None)
-                       
-                        # Update user statistics
-                        update_user_stats(user_id, success=True)
-                        add_swap_history(user_id, "success", processing_time)
-                        
-                        logger.info(f"Face swap completed for {chat_id} in {processing_time:.2f}s")
-                        
-                        # Clean up user data
-                        del user_data[chat_id]
-                    else:
-                        bot.reply_to(message, "❌ Error: No result from face swap API. Please try again.", parse_mode=None)
-                        update_user_stats(user_id, success=False)
-                        add_swap_history(user_id, "failed", processing_time)
-                        if chat_id in user_data:
-                            del user_data[chat_id]
-                else:
-                    bot.reply_to(message, f"❌ Error: Face swap API request failed (Status: {response.status_code}). Please try again.", parse_mode=None)
-                    update_user_stats(user_id, success=False)
-                    add_swap_history(user_id, "failed", processing_time)
-                    if chat_id in user_data:
-                        del user_data[chat_id]
-                
-            else:
-                bot.reply_to(message, "⚠️ Please complete the current swap first or type /swap to start over.", parse_mode=None)
-    
-    except Exception as e:
-        logger.error(f"Error processing photo: {str(e)}")
-        bot.reply_to(message, f"❌ An error occurred: {str(e)}\n\nPlease try again with different photos.", parse_mode=None)
-        if chat_id in user_data:
-            del user_data[chat_id]
-
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    chat_id = message.chat.id
-    
-    if chat_id in user_data:
-        state = user_data[chat_id].get('state')
+@bot.message_handler(func=lambda m: True)
+def handle_text(msg):
+    cid = msg.chat.id
+    if cid in user_data:
+        state = user_data[cid].get('state')
         if state == WAITING_FOR_SOURCE:
-            bot.reply_to(message, "📸 Please send the first photo (the face to use).")
+            bot.reply_to(msg, "📸 Please send the first photo")
         elif state == WAITING_FOR_TARGET:
-            bot.reply_to(message, "📸 Please send the second photo (the face to replace).")
-        elif state is None and 'source' in user_data[chat_id] and 'target' in user_data[chat_id]:
-            bot.reply_to(message, "⏳ Your face swap is being processed. Please wait...")
+            bot.reply_to(msg, "📸 Please send the second photo")
         else:
-            bot.reply_to(message, "Type /swap to start a face swap!")
+            bot.reply_to(msg, "⏳ Processing... Please wait")
     else:
-        bot.reply_to(message, "👋 Welcome! Type /start to see instructions or /swap to start a face swap!")
+        bot.reply_to(msg, "👋 Type /start to begin or /swap to swap faces!")
 
-# ========== MAIN FUNCTION ==========
+# ========== MAIN ==========
 def run_bot():
-    """Run the bot based on configuration"""
     if WEBHOOK_URL:
-        # Use webhook mode
         bot.remove_webhook()
         time.sleep(1)
         bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-        logger.info(f"Webhook set to: {WEBHOOK_URL}/webhook")
+        logger.info(f"Webhook set: {WEBHOOK_URL}/webhook")
     else:
-        # Use polling mode
-        logger.info("Starting bot in polling mode...")
-        # Set bot settings to avoid conflicts
-        bot.skip_pending = True  # Skip pending updates
+        logger.info("Polling mode")
+        bot.skip_pending = True
         bot.polling(none_stop=True, timeout=30)
 
 def run_flask():
-    """Run Flask app"""
-    app.run(
-        host='0.0.0.0',
-        port=BOT_PORT,
-        debug=False,
-        use_reloader=False
-    )
+    app.run(host='0.0.0.0', port=BOT_PORT, debug=False, use_reloader=False)
 
-# ========== START BOT ==========
 if __name__ == '__main__':
-    print("=" * 60)
-    print("🤖 FACE SWAP BOT WITH ADMIN CONTROLS")
-    print("=" * 60)
+    print("="*60)
+    print("🤖 ENHANCED FACE SWAP BOT v3.0")
+    print("="*60)
     print(f"📱 Bot Token: Loaded")
-    print(f"👑 Admin ID: {ADMIN_ID}")
-    print(f"📢 Required Channel: {REQUIRED_CHANNEL}")
+    print(f"👑 Admin: {ADMIN_ID}")
+    print(f"📢 Channel: {REQUIRED_CHANNEL}")
     print(f"🌐 Port: {BOT_PORT}")
-    print(f"🏓 Health Check: http://localhost:{BOT_PORT}/health")
-    print(f"📊 Stats: http://localhost:{BOT_PORT}/stats")
-    print("=" * 60)
-    print("🎯 Features:")
-    print("• Face swapping between two photos")
-    print("• Admin controls and user management")
-    print("• Channel verification system")
-    print("• User statistics and analytics")
+    print("="*60)
+    print("✨ FEATURES:")
+    print("• Face swapping with progress bar")
+    print("• Save favorites & history")
+    print("• Report system")
+    print("• Admin panel with inline buttons")
+    print("• Channel verification")
     print("• Broadcast messaging")
-    print("• Export user data")
-    print("=" * 60)
-    print("👑 Admin Commands:")
-    print("/users - List all users with buttons")
-    print("/ban <id> - Ban user")
-    print("/unban <id> - Unban user")
-    print("/botstatus - Detailed bot report")
-    print("/stats - Quick statistics")
-    print("/exportdata - Export user data as CSV")
-    print("/refreshdb - Refresh database")
-    print("/refreshbot - Refresh bot data")
-    print("/broadcast <msg> - Broadcast to all users")
-    print("=" * 60)
-    print("👑 Created by: @PokiePy")
-    print("💰 Credit change krne wale ki mkb")
-    print("=" * 60)
+    print("• Data export")
+    print("• Compare before/after")
+    print("• Encrypted user data")
+    print("• NSFW detection ready")
+    print("• Real-time progress tracking")
+    print("="*60)
+    print("👑 ADMIN COMMANDS:")
+    print("/users - User management")
+    print("/ban /unban - User control")
+    print("/botstatus - Full report")
+    print("/reports - View reports")
+    print("/broadcast - Send to all")
+    print("/exportdata - CSV export")
+    print("="*60)
+    print("🌐 HUNTER ENDPOINTS:")
+    print(f"GET  / - Dashboard")
+    print(f"GET  /health/hunter - Health check")
+    print(f"GET  /stats/hunter - Statistics")
+    print(f"GET  /users/hunter - User data")
+    print(f"POST /webhook - Telegram webhook")
+    print("="*60)
+    print("Created by @PokiePy")
+    print("="*60)
     
-    # Check if bot is already running
-    print("🔄 Checking if bot is already running...")
     try:
-        # Test bot connection
         bot_info = bot.get_me()
         print(f"✅ Bot connected: @{bot_info.username}")
     except Exception as e:
-        print(f"❌ Bot connection error: {e}")
+        print(f"❌ Bot error: {e}")
     
-    # Choose mode based on environment
     if WEBHOOK_URL:
-        print(f"🌐 Using webhook mode")
-        print(f"✅ Webhook URL: {WEBHOOK_URL}")
-        
-        # Start Flask in main thread
-        print("🚀 Starting Flask server...")
+        print(f"🌐 Webhook mode: {WEBHOOK_URL}")
         run_flask()
     else:
-        print("📡 Using polling mode")
-        
-        # IMPORTANT: Don't start Flask in background thread when using polling
-        # Just run the bot polling in main thread
-        print("🚀 Starting Telegram bot in polling mode...")
+        print("📡 Polling mode")
         try:
             run_bot()
         except KeyboardInterrupt:
-            print("\n🛑 Bot stopped by user.")
+            print("\n🛑 Stopped by user")
         except Exception as e:
-            logger.error(f"Bot error: {e}")
-            print(f"❌ Bot error: {e}")
+            print(f"❌ Error: {e}")
             sys.exit(1)
